@@ -1,0 +1,32 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build / deps
+node_modules/
+dist/
+target/
+build/
+coverage/
+.cache/
+
+# Runtime / local env
+.env
+.env.*
+storage/
+data/
+*.log
+
+# Git helper / template files user asked to ignore
+.gitmessage
+.gitmessage.txt
+.github/ISSUE_TEMPLATE/
+.github/PULL_REQUEST_TEMPLATE*
+
+# Open-source license files user asked to ignore
+LICENSE
+LICENSE.*
+COPYING
+COPYING.*
