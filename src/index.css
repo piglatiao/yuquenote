@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.5rem;
+    --yuque-primary: 213 85% 55%;
+    --yuque-secondary: 98 59% 45%;
+    --yuque-accent: 33 97% 57%;
+  }
+
+  * {
+    border-color: hsl(var(--yuque-border) / 0.1);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+img {
+  object-position: top;
+}
