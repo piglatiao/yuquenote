@@ -1,24 +1,24 @@
-import { useState, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   BookOpen,
   FileText,
   ChevronDown,
   ChevronRight,
-  Plus,
+  FilePlus,
+  FolderPlus,
   MoreHorizontal,
   Search,
   FolderOpen,
   Star,
   Clock,
   Trash2,
-  Copy,
+  Edit3,
   LogOut,
   HardDrive,
-  Trash,
   File,
 } from 'lucide-react';
 import type { User } from '../lib/types';
-import type { DocTreeItem } from '../lib/documents';
+import type { DocTreeItem } from '../lib/documentsApi';
 
 interface SidebarProps {
   onDocSelect: (doc: DocTreeItem) => void;
@@ -27,7 +27,9 @@ interface SidebarProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   docTree: DocTreeItem[];
-  onCreateDoc: () => void;
+  onCreateDoc: (parentId?: string | null) => void;
+  onCreateFolder: (parentId?: string | null) => void;
+  onRenameDoc: (id: string, title: string) => void;
   onDeleteDoc: (id: string) => void;
   onToggleStar: (id: string) => void;
   onLogout: () => void;
@@ -44,6 +46,8 @@ export default function Sidebar({
   onTabChange,
   docTree,
   onCreateDoc,
+  onCreateFolder,
+  onRenameDoc,
   onDeleteDoc,
   onToggleStar,
   onLogout,
@@ -51,12 +55,12 @@ export default function Sidebar({
   searchQuery,
   onSearchChange,
 }: SidebarProps) {
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['doc-1', 'doc-2', 'doc-3']));
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
   const toggleExpand = (id: string) => {
-    setExpandedIds(prev => {
+    setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
@@ -74,7 +78,31 @@ export default function Sidebar({
 
   const closeContextMenu = () => setContextMenu(null);
 
-  // Filter docs based on search
+  const allDocs = useMemo(() => {
+    const result: DocTreeItem[] = [];
+    const walk = (items: DocTreeItem[]) => {
+      items.forEach((item) => {
+        result.push(item);
+        if (item.children.length > 0) {
+          walk(item.children);
+        }
+      });
+    };
+
+    walk(docTree);
+    return result;
+  }, [docTree]);
+
+  const docMap = useMemo(() => new Map(allDocs.map((item) => [item.id, item])), [allDocs]);
+  const contextTarget = contextMenu ? docMap.get(contextMenu.docId) || null : null;
+  const selectedTreeNode = selectedDocId ? docMap.get(selectedDocId) || null : null;
+
+  const createParentId = useMemo(() => {
+    if (!selectedTreeNode) return null;
+    if (selectedTreeNode.icon === 'folder') return selectedTreeNode.id;
+    return selectedTreeNode.parent_id;
+  }, [selectedTreeNode]);
+
   const filteredDocTree = useMemo(() => {
     if (!searchQuery.trim()) return docTree;
 
@@ -89,7 +117,6 @@ export default function Sidebar({
           acc.push({
             ...item,
             children: filteredChildren,
-            expanded: matchesTitle ? true : item.expanded,
           });
         }
 
@@ -100,38 +127,43 @@ export default function Sidebar({
     return filterTree(docTree);
   }, [docTree, searchQuery]);
 
-  // Get starred docs
-  const starredDocs = useMemo(() => {
-    const flatten = (items: DocTreeItem[]): DocTreeItem[] => {
+  const starredTree = useMemo(() => {
+    const cloneAll = (node: DocTreeItem): DocTreeItem => ({
+      ...node,
+      children: node.children.map(cloneAll),
+    });
+
+    const build = (items: DocTreeItem[], forceIncludeAllChildren = false): DocTreeItem[] => {
       return items.reduce<DocTreeItem[]>((acc, item) => {
-        if (item.is_starred) {
-          acc.push(item);
+        const forceForCurrent = forceIncludeAllChildren || (item.is_starred && item.icon === 'folder');
+
+        if (forceForCurrent) {
+          acc.push({
+            ...item,
+            children: item.children.map(cloneAll),
+          });
+          return acc;
         }
-        if (item.children.length > 0) {
-          acc.push(...flatten(item.children));
+
+        const children = build(item.children, false);
+        if (item.is_starred || children.length > 0) {
+          acc.push({
+            ...item,
+            children,
+          });
         }
+
         return acc;
       }, []);
     };
-    return flatten(docTree);
+
+    return build(docTree);
   }, [docTree]);
-
-  // Get recent docs (last 5 updated)
   const recentDocs = useMemo(() => {
-    const flatten = (items: DocTreeItem[]): DocTreeItem[] => {
-      return items.reduce<DocTreeItem[]>((acc, item) => {
-        acc.push(item);
-        if (item.children.length > 0) {
-          acc.push(...flatten(item.children));
-        }
-        return acc;
-      }, []);
-    };
-
-    return flatten(docTree)
+    return [...allDocs]
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 5);
-  }, [docTree]);
+  }, [allDocs]);
 
   const getIcon = (icon?: 'file' | 'folder' | 'star' | null, isStarred?: boolean) => {
     if (icon === 'folder') {
@@ -143,10 +175,10 @@ export default function Sidebar({
     return <FileText className="w-4 h-4 text-yuque-textMuted" />;
   };
 
-  const renderDoc = (doc: DocTreeItem, level: number = 0): JSX.Element => {
+  const renderDoc = (doc: DocTreeItem, level: number = 0, forceExpand: boolean = false): JSX.Element => {
     const isSelected = selectedDocId === doc.id;
-    const hasChildren = doc.children && doc.children.length > 0;
-    const isExpanded = expandedIds.has(doc.id);
+    const hasChildren = doc.children.length > 0;
+    const isExpanded = forceExpand || expandedIds.has(doc.id);
 
     return (
       <div key={doc.id}>
@@ -159,7 +191,9 @@ export default function Sidebar({
           style={{ paddingLeft: `${12 + level * 16}px` }}
           onClick={() => {
             onDocSelect(doc);
-            if (hasChildren) toggleExpand(doc.id);
+            if (hasChildren && !forceExpand) {
+              toggleExpand(doc.id);
+            }
           }}
           onContextMenu={(e) => handleContextMenu(e, doc.id)}
         >
@@ -184,22 +218,20 @@ export default function Sidebar({
             <MoreHorizontal className="w-3.5 h-3.5 text-yuque-textMuted" />
           </button>
         </div>
+
         {hasChildren && isExpanded && (
           <div className="animate-accordion-down overflow-hidden">
-            {doc.children.map((child) => renderDoc(child, level + 1))}
+            {doc.children.map((child) => renderDoc(child, level + 1, forceExpand))}
           </div>
         )}
       </div>
     );
   };
 
-  const getInitials = (name: string) => {
-    return name.charAt(0).toUpperCase();
-  };
+  const getInitials = (name: string) => name.charAt(0).toUpperCase();
 
   return (
     <div className="w-64 h-full bg-yuque-sidebar border-r border-yuque-border flex flex-col" onClick={closeContextMenu}>
-      {/* Logo区域 */}
       <div className="h-14 flex items-center gap-3 px-4 border-b border-yuque-border">
         <div className="w-8 h-8 bg-gradient-to-br from-yuque-primary to-blue-400 rounded-lg flex items-center justify-center">
           <BookOpen className="w-5 h-5 text-white" />
@@ -207,7 +239,6 @@ export default function Sidebar({
         <span className="font-semibold text-yuque-text text-lg">语雀笔记</span>
       </div>
 
-      {/* 搜索框 */}
       <div className="px-3 py-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-yuque-textMuted" />
@@ -221,14 +252,11 @@ export default function Sidebar({
         </div>
       </div>
 
-      {/* 标签切换 */}
       <div className="flex px-3 pb-2 gap-1">
         <button
           onClick={() => onTabChange('docs')}
           className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-            activeTab === 'docs'
-              ? 'bg-yuque-primary text-white'
-              : 'text-yuque-textSecondary hover:bg-yuque-hover'
+            activeTab === 'docs' ? 'bg-yuque-primary text-white' : 'text-yuque-textSecondary hover:bg-yuque-hover'
           }`}
         >
           文档
@@ -239,9 +267,7 @@ export default function Sidebar({
             onFilesSelect();
           }}
           className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-1 ${
-            activeTab === 'files'
-              ? 'bg-yuque-primary text-white'
-              : 'text-yuque-textSecondary hover:bg-yuque-hover'
+            activeTab === 'files' ? 'bg-yuque-primary text-white' : 'text-yuque-textSecondary hover:bg-yuque-hover'
           }`}
         >
           <HardDrive className="w-3 h-3" />
@@ -250,9 +276,7 @@ export default function Sidebar({
         <button
           onClick={() => onTabChange('star')}
           className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-1 ${
-            activeTab === 'star'
-              ? 'bg-yuque-primary text-white'
-              : 'text-yuque-textSecondary hover:bg-yuque-hover'
+            activeTab === 'star' ? 'bg-yuque-primary text-white' : 'text-yuque-textSecondary hover:bg-yuque-hover'
           }`}
         >
           <Star className="w-3 h-3" />
@@ -260,27 +284,25 @@ export default function Sidebar({
         <button
           onClick={() => onTabChange('recent')}
           className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors flex items-center justify-center gap-1 ${
-            activeTab === 'recent'
-              ? 'bg-yuque-primary text-white'
-              : 'text-yuque-textSecondary hover:bg-yuque-hover'
+            activeTab === 'recent' ? 'bg-yuque-primary text-white' : 'text-yuque-textSecondary hover:bg-yuque-hover'
           }`}
         >
           <Clock className="w-3 h-3" />
         </button>
       </div>
 
-      {/* 新建按钮 */}
       <div className="px-3 pb-3">
-        <button
-          onClick={onCreateDoc}
-          className="w-full flex items-center justify-center gap-2 py-2 bg-yuque-primary text-white rounded-lg text-sm font-medium hover:bg-blue-600 active:scale-[0.98] transition-all shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          新建文档
-        </button>
+        <div className="grid grid-cols-1 gap-2">
+          <button
+            onClick={() => onCreateFolder(createParentId)}
+            className="w-full flex items-center justify-center gap-2 py-2 bg-yuque-primary text-white rounded-lg text-sm font-medium hover:bg-blue-600 active:scale-[0.98] transition-all shadow-sm"
+          >
+            <FolderPlus className="w-4 h-4" />
+            新建文件夹
+          </button>
+        </div>
       </div>
 
-      {/* 文档列表 */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'docs' && (
           <div className="py-1">
@@ -288,11 +310,8 @@ export default function Sidebar({
               <div className="py-8 text-center text-yuque-textMuted">
                 <FileText className="w-8 h-8 mx-auto mb-2 text-gray-300" />
                 <p className="text-sm">暂无文档</p>
-                <button
-                  onClick={onCreateDoc}
-                  className="mt-2 text-sm text-yuque-primary hover:underline"
-                >
-                  创建第一个文档
+                <button onClick={() => onCreateFolder(createParentId)} className="mt-2 text-sm text-yuque-primary hover:underline">
+                  先新建文件夹
                 </button>
               </div>
             ) : (
@@ -303,24 +322,13 @@ export default function Sidebar({
 
         {activeTab === 'star' && (
           <div className="py-2">
-            {starredDocs.length === 0 ? (
+            {starredTree.length === 0 ? (
               <div className="py-8 text-center text-yuque-textMuted">
                 <Star className="w-8 h-8 mx-auto mb-2 text-gray-300" />
                 <p className="text-sm">暂无收藏内容</p>
               </div>
             ) : (
-              starredDocs.map((doc) => (
-                <div
-                  key={doc.id}
-                  onClick={() => onDocSelect(doc)}
-                  className={`flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-yuque-hover ${
-                    selectedDocId === doc.id ? 'bg-yuque-selected text-yuque-primary font-medium' : ''
-                  }`}
-                >
-                  <Star className="w-4 h-4 text-yuque-accent fill-yuque-accent" />
-                  <span className="text-sm truncate">{doc.title}</span>
-                </div>
-              ))
+              starredTree.map((doc) => renderDoc(doc, 0, true))
             )}
           </div>
         )}
@@ -353,7 +361,6 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* 底部用户区域 */}
       <div className="border-t border-yuque-border p-3">
         <div
           className="relative flex items-center gap-3 p-2 hover:bg-yuque-hover rounded-lg cursor-pointer transition-colors"
@@ -368,7 +375,6 @@ export default function Sidebar({
           </div>
         </div>
 
-        {/* User dropdown menu */}
         {showUserMenu && (
           <div className="absolute bottom-16 left-0 w-64 bg-white rounded-lg shadow-dropdown py-1 z-50 border border-gray-100">
             <div className="px-4 py-2 border-b border-gray-100">
@@ -389,7 +395,6 @@ export default function Sidebar({
         )}
       </div>
 
-      {/* 右键菜单 */}
       {contextMenu && (
         <div
           className="fixed bg-white rounded-lg shadow-dropdown py-1 min-w-[160px] z-50 animate-scale-in border border-gray-100"
@@ -404,13 +409,59 @@ export default function Sidebar({
             className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text"
           >
             <Star className="w-4 h-4" />
-            收藏
+            {contextTarget?.is_starred ? '取消收藏' : '收藏'}
           </button>
-          <button className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text">
-            <Copy className="w-4 h-4" />
-            复制
+
+          {contextTarget?.icon === 'folder' && (
+            <>
+              <button
+                onClick={() => {
+                  onCreateDoc(contextMenu.docId);
+                  closeContextMenu();
+                }}
+                className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text"
+              >
+                <FilePlus className="w-4 h-4" />
+                新建笔记
+              </button>
+              <button
+                onClick={() => {
+                  onCreateFolder(contextMenu.docId);
+                  closeContextMenu();
+                }}
+                className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text"
+              >
+                <FolderPlus className="w-4 h-4" />
+                新建文件夹
+              </button>
+            </>
+          )}
+
+          <button
+            onClick={() => {
+              const target = contextTarget;
+              if (!target) {
+                closeContextMenu();
+                return;
+              }
+
+              const nextTitle = window.prompt('请输入新名称', target.title)?.trim();
+              if (!nextTitle || nextTitle === target.title) {
+                closeContextMenu();
+                return;
+              }
+
+              onRenameDoc(target.id, nextTitle);
+              closeContextMenu();
+            }}
+            className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text"
+          >
+            <Edit3 className="w-4 h-4" />
+            重命名
           </button>
+
           <div className="h-px bg-gray-100 my-1" />
+
           <button
             onClick={() => {
               onDeleteDoc(contextMenu.docId);
