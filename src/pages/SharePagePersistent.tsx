@@ -164,7 +164,7 @@ export default function SharePagePersistent() {
             </div>
 
             <div
-              className="px-8 py-6 prose prose-gray max-w-none"
+              className="px-8 py-6 prose-yuque share-content max-w-none"
               dangerouslySetInnerHTML={{ __html: document.content }}
             />
           </div>
