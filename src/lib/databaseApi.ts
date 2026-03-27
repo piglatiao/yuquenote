@@ -8,7 +8,9 @@ import type {
   ShareLink,
   SharedResourcePayload,
   Team,
+  TeamInvitation,
   TeamMember,
+  User,
 } from './types';
 
 export const folderService = {
@@ -191,6 +193,80 @@ export const teamService = {
 
   async getJoinRequests(teamId: string): Promise<TeamMember[]> {
     return apiRequest<TeamMember[]>(`/teams/${encodeURIComponent(teamId)}/join-requests`);
+  },
+
+  async getInviteCandidates(teamId: string, query: string): Promise<User[]> {
+    if (!query.trim()) {
+      return [];
+    }
+
+    return apiRequest<User[]>(
+      `/teams/${encodeURIComponent(teamId)}/invite-candidates?query=${encodeURIComponent(query.trim())}`,
+    );
+  },
+
+  async getInvitations(teamId: string): Promise<TeamInvitation[]> {
+    return apiRequest<TeamInvitation[]>(`/teams/${encodeURIComponent(teamId)}/invitations`);
+  },
+
+  async createEmailInvitation(teamId: string, invitedUserId: string): Promise<TeamInvitation | null> {
+    return apiRequest<TeamInvitation>(
+      `/teams/${encodeURIComponent(teamId)}/invitations`,
+      toJsonRequest(
+        {
+          invite_type: 'email',
+          invited_user_id: invitedUserId,
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+
+  async createInviteCode(teamId: string): Promise<TeamInvitation | null> {
+    return apiRequest<TeamInvitation>(
+      `/teams/${encodeURIComponent(teamId)}/invitations`,
+      toJsonRequest(
+        {
+          invite_type: 'code',
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+
+  async revokeInvitation(teamId: string, invitationId: string): Promise<boolean> {
+    await apiRequest<{ ok: true }>(
+      `/teams/${encodeURIComponent(teamId)}/invitations/${encodeURIComponent(invitationId)}/revoke`,
+      { method: 'POST' },
+    );
+    return true;
+  },
+
+  async getMyInvitations(): Promise<TeamInvitation[]> {
+    return apiRequest<TeamInvitation[]>('/team-invitations/mine');
+  },
+
+  async acceptInvitation(invitationId: string): Promise<Team | null> {
+    const response = await apiRequest<{ ok: true; team: Team }>(
+      `/team-invitations/${encodeURIComponent(invitationId)}/accept`,
+      { method: 'POST' },
+    );
+    return response.team;
+  },
+
+  async rejectInvitation(invitationId: string): Promise<boolean> {
+    await apiRequest<{ ok: true }>(`/team-invitations/${encodeURIComponent(invitationId)}/reject`, {
+      method: 'POST',
+    });
+    return true;
+  },
+
+  async joinByInviteCode(code: string): Promise<Team | null> {
+    const response = await apiRequest<{ ok: true; team: Team }>(
+      '/team-invitations/accept-by-code',
+      toJsonRequest({ code }, { method: 'POST' }),
+    );
+    return response.team;
   },
 
   async approveJoinRequest(teamId: string, requestId: string): Promise<boolean> {

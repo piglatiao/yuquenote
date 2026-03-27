@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import {
   getResourcePermission,
   getShareLinkByToken,
   getTeamById,
+  getTeamInvitationById,
   getTeamMembership,
   getUserById,
   listComments,
@@ -26,10 +28,12 @@ import {
   listDocuments,
   listFiles,
   listFolders,
+  listPendingInvitationsForUser,
   listPublicDocuments,
   listPublicFiles,
   listResourcePermissions,
   listShareLinks,
+  listTeamInvitations,
   listTeamJoinRequests,
   listTeamMembers,
   listTeamsForUser,
@@ -38,6 +42,8 @@ import {
   newId,
   now,
   publicUser,
+  getPendingTeamInvitationByCode,
+  searchInvitableUsers,
   sanitizeNullable,
   todoRowToModel,
   verifyPassword,
@@ -90,6 +96,36 @@ function serializeTeamForUser(team, userId) {
     is_owner: isOwner,
     membership_status: isOwner ? 'approved' : membership?.status ?? team.membership_status ?? null,
   };
+}
+
+function hasAvailableTeamSeat(teamId) {
+  const team = getTeamById(teamId);
+  const approvedCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM team_members WHERE team_id = ? AND status = 'approved'")
+    .get(teamId);
+  const approvedCount = Number(approvedCountRow?.count ?? 0);
+  const memberLimit = Number(team?.member_limit ?? 10);
+
+  return approvedCount < memberLimit;
+}
+
+function generateInviteCode() {
+  return randomBytes(4).toString('hex').toUpperCase();
+}
+
+function approveMembership(teamId, userId) {
+  const timestamp = now();
+  const existingMembership = getTeamMembership(teamId, userId);
+
+  if (existingMembership) {
+    db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('approved', timestamp, existingMembership.id);
+    return;
+  }
+
+  db.prepare(`
+    INSERT INTO team_members (id, team_id, user_id, status, created_at, updated_at)
+    VALUES (?, ?, ?, 'approved', ?, ?)
+  `).run(newId(), teamId, userId, timestamp, timestamp);
 }
 
 function canViewDocument(userId, document) {
@@ -451,6 +487,161 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/invite-candidates$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/invite-candidates', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const query = String(url.searchParams.get('query') || '').trim();
+    if (!query) {
+      json(res, 200, []);
+      return;
+    }
+
+    json(res, 200, searchInvitableUsers(teamId, query));
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/invitations$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/invitations', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    json(res, 200, listTeamInvitations(teamId));
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/invitations$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/invitations', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const inviteType = String(body.invite_type || '').trim();
+    const timestamp = now();
+
+    if (inviteType === 'code') {
+      db.prepare(`
+        UPDATE team_invitations
+        SET status = 'revoked', updated_at = ?
+        WHERE team_id = ? AND invite_type = 'code' AND status = 'pending'
+      `).run(timestamp, teamId);
+
+      let code = '';
+      do {
+        code = generateInviteCode();
+      } while (db.prepare('SELECT id FROM team_invitations WHERE code = ?').get(code));
+
+      const invitationId = newId();
+      db.prepare(`
+        INSERT INTO team_invitations (
+          id, team_id, invite_type, code, invited_email, invited_user_id, status,
+          created_by_user_id, accepted_by_user_id, accepted_at, created_at, updated_at
+        )
+        VALUES (?, ?, 'code', ?, NULL, NULL, 'pending', ?, NULL, NULL, ?, ?)
+      `).run(invitationId, teamId, code, currentUser.id, timestamp, timestamp);
+
+      json(res, 201, listTeamInvitations(teamId).find((invite) => invite.id === invitationId) || null);
+      return;
+    }
+
+    if (inviteType === 'email') {
+      const invitedUserId = sanitizeNullable(body.invited_user_id);
+      if (!invitedUserId) {
+        json(res, 400, { error: 'invited_user_id is required.' });
+        return;
+      }
+
+      const invitedUser = getUserById(invitedUserId);
+      if (!invitedUser) {
+        json(res, 404, { error: 'Invited user not found.' });
+        return;
+      }
+
+      if (invitedUser.id === team.owner_user_id) {
+        json(res, 409, { error: 'The team owner does not need an invitation.' });
+        return;
+      }
+
+      const membership = getTeamMembership(teamId, invitedUser.id);
+      if (membership?.status === 'approved') {
+        json(res, 409, { error: 'This user is already a team member.' });
+        return;
+      }
+
+      if (membership?.status === 'pending') {
+        json(res, 409, { error: 'This user already has a pending join request.' });
+        return;
+      }
+
+      const existingInvite = db.prepare(`
+        SELECT id
+        FROM team_invitations
+        WHERE team_id = ?
+          AND invite_type = 'email'
+          AND invited_user_id = ?
+          AND status = 'pending'
+      `).get(teamId, invitedUser.id);
+
+      if (existingInvite) {
+        json(res, 409, { error: 'This user already has a pending invitation.' });
+        return;
+      }
+
+      const invitationId = newId();
+      db.prepare(`
+        INSERT INTO team_invitations (
+          id, team_id, invite_type, code, invited_email, invited_user_id, status,
+          created_by_user_id, accepted_by_user_id, accepted_at, created_at, updated_at
+        )
+        VALUES (?, ?, 'email', NULL, ?, ?, 'pending', ?, NULL, NULL, ?, ?)
+      `).run(invitationId, teamId, invitedUser.email, invitedUser.id, currentUser.id, timestamp, timestamp);
+
+      json(res, 201, listTeamInvitations(teamId).find((invite) => invite.id === invitationId) || null);
+      return;
+    }
+
+    json(res, 400, { error: 'invite_type must be code or email.' });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/invitations\/[^/]+\/revoke$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const invitationId = decodeURIComponent(segments[5]);
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const invitation = getTeamInvitationById(invitationId);
+    if (!invitation || invitation.team_id !== teamId) {
+      json(res, 404, { error: 'Invitation not found.' });
+      return;
+    }
+
+    db.prepare(`
+      UPDATE team_invitations
+      SET status = 'revoked', updated_at = ?
+      WHERE id = ?
+    `).run(now(), invitationId);
+
+    json(res, 200, { ok: true });
+    return;
+  }
+
   if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/members$/.test(url.pathname)) {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
@@ -568,6 +759,127 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('rejected', now(), requestId);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/team-invitations/mine') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, listPendingInvitationsForUser(currentUser.id, currentUser.email));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-invitations/accept-by-code') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const code = String(body.code || '').trim().toUpperCase();
+    if (!code) {
+      json(res, 400, { error: 'Invitation code is required.' });
+      return;
+    }
+
+    const invitation = getPendingTeamInvitationByCode(code);
+    if (!invitation) {
+      json(res, 404, { error: 'Invitation code not found or expired.' });
+      return;
+    }
+
+    const team = getTeamById(invitation.team_id);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (team.owner_user_id === currentUser.id || isApprovedTeamMember(currentUser.id, team.id)) {
+      json(res, 200, { ok: true, team: serializeTeamForUser(team, currentUser.id) });
+      return;
+    }
+
+    if (!hasAvailableTeamSeat(team.id)) {
+      json(res, 409, { error: 'Team member limit reached.' });
+      return;
+    }
+
+    approveMembership(team.id, currentUser.id);
+    json(res, 200, { ok: true, team: serializeTeamForUser(getTeamById(team.id), currentUser.id) });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/team-invitations\/[^/]+\/accept$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const invitationId = decodeURIComponent(url.pathname.split('/')[3]);
+    const invitation = getTeamInvitationById(invitationId);
+    if (!invitation || invitation.invite_type !== 'email' || invitation.status !== 'pending') {
+      json(res, 404, { error: 'Invitation not found.' });
+      return;
+    }
+
+    if (!(invitation.invited_user_id === currentUser.id || invitation.invited_email === currentUser.email)) {
+      json(res, 403, { error: 'You do not have access to this invitation.' });
+      return;
+    }
+
+    const team = getTeamById(invitation.team_id);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (team.owner_user_id === currentUser.id || isApprovedTeamMember(currentUser.id, team.id)) {
+      db.prepare(`
+        UPDATE team_invitations
+        SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(currentUser.id, now(), now(), invitation.id);
+
+      json(res, 200, { ok: true, team: serializeTeamForUser(team, currentUser.id) });
+      return;
+    }
+
+    if (!hasAvailableTeamSeat(team.id)) {
+      json(res, 409, { error: 'Team member limit reached.' });
+      return;
+    }
+
+    approveMembership(team.id, currentUser.id);
+    db.prepare(`
+      UPDATE team_invitations
+      SET status = 'accepted', accepted_by_user_id = ?, accepted_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(currentUser.id, now(), now(), invitation.id);
+
+    json(res, 200, { ok: true, team: serializeTeamForUser(getTeamById(team.id), currentUser.id) });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/team-invitations\/[^/]+\/reject$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const invitationId = decodeURIComponent(url.pathname.split('/')[3]);
+    const invitation = getTeamInvitationById(invitationId);
+    if (!invitation || invitation.invite_type !== 'email' || invitation.status !== 'pending') {
+      json(res, 404, { error: 'Invitation not found.' });
+      return;
+    }
+
+    if (!(invitation.invited_user_id === currentUser.id || invitation.invited_email === currentUser.email)) {
+      json(res, 403, { error: 'You do not have access to this invitation.' });
+      return;
+    }
+
+    db.prepare(`
+      UPDATE team_invitations
+      SET status = 'declined', updated_at = ?
+      WHERE id = ?
+    `).run(now(), invitation.id);
+
     json(res, 200, { ok: true });
     return;
   }

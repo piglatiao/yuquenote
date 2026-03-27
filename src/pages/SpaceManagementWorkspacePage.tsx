@@ -26,7 +26,7 @@ import { apiRequest } from '../lib/api';
 import { authService } from '../lib/authApi';
 import { teamService } from '../lib/databaseApi';
 import { documentService } from '../lib/documentsApi';
-import type { Document, Team, TeamMember, User } from '../lib/types';
+import type { Document, Team, TeamInvitation, TeamMember, User } from '../lib/types';
 
 type ManageSection = 'overview' | 'members' | 'settings';
 
@@ -921,6 +921,10 @@ export default function SpaceManagementWorkspacePage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
   const [memberFeedback, setMemberFeedback] = useState('');
+  const [invitations, setInvitations] = useState<TeamInvitation[]>([]);
+  const [inviteQuery, setInviteQuery] = useState('');
+  const [inviteCandidates, setInviteCandidates] = useState<User[]>([]);
+  const [inviteFeedback, setInviteFeedback] = useState('');
   const [settingsName, setSettingsName] = useState('');
   const [settingsAvatarUrl, setSettingsAvatarUrl] = useState('');
   const [settingsCreatedAt, setSettingsCreatedAt] = useState('');
@@ -930,6 +934,10 @@ export default function SpaceManagementWorkspacePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
+  const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
+  const [busyInviteCandidateId, setBusyInviteCandidateId] = useState<string | null>(null);
+  const [isGeneratingInviteCode, setIsGeneratingInviteCode] = useState(false);
+  const [isSearchingInviteCandidates, setIsSearchingInviteCandidates] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [error, setError] = useState('');
 
@@ -945,6 +953,16 @@ export default function SpaceManagementWorkspacePage() {
   const rejectedMembers = useMemo(
     () => members.filter((member) => member.status === 'rejected'),
     [members],
+  );
+
+  const codeInvitation = useMemo(
+    () => invitations.find((invitation) => invitation.invite_type === 'code' && invitation.status === 'pending') || null,
+    [invitations],
+  );
+
+  const emailInvitations = useMemo(
+    () => invitations.filter((invitation) => invitation.invite_type === 'email' && invitation.status === 'pending'),
+    [invitations],
   );
 
   const owner = useMemo(() => {
@@ -1028,20 +1046,23 @@ export default function SpaceManagementWorkspacePage() {
         setTeam(null);
         setMembers([]);
         setJoinRequests([]);
+        setInvitations([]);
         setDocuments([]);
         setError('空间不存在，或你没有权限访问这个空间。');
         return;
       }
 
-      const [memberRows, requestRows, allDocuments] = await Promise.all([
+      const [memberRows, requestRows, invitationRows, allDocuments] = await Promise.all([
         teamService.getMembers(teamId),
         nextTeam.is_owner ? teamService.getJoinRequests(teamId) : Promise.resolve([]),
+        nextTeam.is_owner ? teamService.getInvitations(teamId) : Promise.resolve([]),
         documentService.getAll().catch(() => []),
       ]);
 
       setTeam(nextTeam);
       setMembers(memberRows);
       setJoinRequests(requestRows);
+      setInvitations(invitationRows);
       setDocuments(allDocuments);
       syncSettingsForm(nextTeam);
       setMemberFeedback('');
@@ -1049,6 +1070,7 @@ export default function SpaceManagementWorkspacePage() {
       setTeam(null);
       setMembers([]);
       setJoinRequests([]);
+      setInvitations([]);
       setDocuments([]);
       setError(loadError instanceof Error ? loadError.message : '空间管理数据加载失败');
     } finally {
@@ -1060,6 +1082,52 @@ export default function SpaceManagementWorkspacePage() {
   useEffect(() => {
     void load();
   }, [teamId]);
+
+  useEffect(() => {
+    setInviteQuery('');
+    setInviteCandidates([]);
+    setInviteFeedback('');
+  }, [teamId]);
+
+  useEffect(() => {
+    if (!isOwner || !team) {
+      setInviteCandidates([]);
+      return;
+    }
+
+    const query = inviteQuery.trim();
+    if (!query) {
+      setInviteCandidates([]);
+      setIsSearchingInviteCandidates(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsSearchingInviteCandidates(true);
+
+      try {
+        const candidates = await teamService.getInviteCandidates(team.id, query);
+        if (!cancelled) {
+          setInviteCandidates(candidates);
+        }
+      } catch (searchError) {
+        if (!cancelled) {
+          setInviteCandidates([]);
+          setInviteFeedback(searchError instanceof Error ? searchError.message : '搜索可邀请成员失败');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsSearchingInviteCandidates(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [inviteQuery, isOwner, team]);
 
   const switchSection = (section: ManageSection) => {
     setSearchParams({ section });
@@ -1111,6 +1179,91 @@ export default function SpaceManagementWorkspacePage() {
       await load('refresh');
     } finally {
       setBusyRequestId(null);
+    }
+  };
+
+  const handleGenerateInviteCode = async () => {
+    if (!team) return;
+
+    setIsGeneratingInviteCode(true);
+    setInviteFeedback('');
+
+    try {
+      const invitation = await teamService.createInviteCode(team.id);
+      if (!invitation) {
+        setInviteFeedback('生成邀请码失败');
+        return;
+      }
+
+      const nextInvitations = await teamService.getInvitations(team.id);
+      setInvitations(nextInvitations);
+      setInviteFeedback('邀请码已更新');
+    } catch (inviteError) {
+      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '生成邀请码失败');
+    } finally {
+      setIsGeneratingInviteCode(false);
+    }
+  };
+
+  const handleCopyInviteCode = async () => {
+    if (!codeInvitation?.code) {
+      setInviteFeedback('当前还没有可用的邀请码');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(codeInvitation.code);
+      setInviteFeedback('邀请码已复制');
+    } catch {
+      setInviteFeedback('复制邀请码失败');
+    }
+  };
+
+  const handleInviteCandidate = async (user: User) => {
+    if (!team) return;
+
+    setBusyInviteCandidateId(user.id);
+    setInviteFeedback('');
+
+    try {
+      const invitation = await teamService.createEmailInvitation(team.id, user.id);
+      if (!invitation) {
+        setInviteFeedback('发送邀请失败');
+        return;
+      }
+
+      const nextInvitations = await teamService.getInvitations(team.id);
+      setInvitations(nextInvitations);
+      setInviteQuery('');
+      setInviteCandidates([]);
+      setInviteFeedback(`已向 ${user.email} 发送邀请`);
+    } catch (inviteError) {
+      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '发送邀请失败');
+    } finally {
+      setBusyInviteCandidateId(null);
+    }
+  };
+
+  const handleRevokeInvitation = async (invitationId: string) => {
+    if (!team) return;
+
+    setBusyInvitationId(invitationId);
+    setInviteFeedback('');
+
+    try {
+      const ok = await teamService.revokeInvitation(team.id, invitationId);
+      if (!ok) {
+        setInviteFeedback('撤销邀请失败');
+        return;
+      }
+
+      const nextInvitations = await teamService.getInvitations(team.id);
+      setInvitations(nextInvitations);
+      setInviteFeedback('邀请已撤销');
+    } catch (inviteError) {
+      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '撤销邀请失败');
+    } finally {
+      setBusyInvitationId(null);
     }
   };
 
@@ -1408,6 +1561,176 @@ export default function SpaceManagementWorkspacePage() {
       </section>
 
       {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      正在搜索可邀请成员...
+                    </div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

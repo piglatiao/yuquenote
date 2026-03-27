@@ -1,13 +1,46 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Plus, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { Check, KeyRound, Loader2, Plus, Search, ShieldCheck, Users, X } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import NameInputModal from './NameInputModal';
 import { teamService } from '../lib/databaseApi';
-import type { Team, TeamMember } from '../lib/types';
-import { useNavigate } from 'react-router-dom';
+import type { Team, TeamInvitation, TeamMember } from '../lib/types';
 
 interface TeamWorkspacePanelProps {
   activeWorkspaceTeamId?: string | null;
   onEnterTeamSpace?: (team: Team) => void;
+}
+
+function formatDateTime(dateLike: string) {
+  const date = new Date(dateLike);
+  if (Number.isNaN(date.getTime())) {
+    return '--';
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+    .format(date)
+    .replace(/\//g, '-');
+}
+
+function getStatusText(team: Team) {
+  if (team.is_owner || team.membership_status === 'approved') {
+    return '已加入';
+  }
+
+  if (team.membership_status === 'pending') {
+    return '申请中';
+  }
+
+  if (team.membership_status === 'rejected') {
+    return '已拒绝，可重新申请';
+  }
+
+  return '未加入';
 }
 
 export default function TeamWorkspacePanel({
@@ -17,15 +50,18 @@ export default function TeamWorkspacePanel({
   const navigate = useNavigate();
   const [teams, setTeams] = useState<Team[]>([]);
   const [discoverableTeams, setDiscoverableTeams] = useState<Team[]>([]);
+  const [myInvitations, setMyInvitations] = useState<TeamInvitation[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState('');
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [joinRequests, setJoinRequests] = useState<TeamMember[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
-  const [isBusy, setIsBusy] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [draftTeamName, setDraftTeamName] = useState('');
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
   const selectedTeam = useMemo(
     () => teams.find((team) => team.id === selectedTeamId) || null,
@@ -34,7 +70,9 @@ export default function TeamWorkspacePanel({
 
   const filteredMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
-    if (!query) return members;
+    if (!query) {
+      return members;
+    }
 
     return members.filter((member) => {
       const nickname = member.user?.nickname?.toLowerCase() || '';
@@ -48,24 +86,30 @@ export default function TeamWorkspacePanel({
     setError('');
 
     try {
-      const [mine, discoverable] = await Promise.all([
+      const [mine, discoverable, invitations] = await Promise.all([
         teamService.getMyTeams(),
         teamService.getDiscoverableTeams(),
+        teamService.getMyInvitations(),
       ]);
 
       setTeams(mine);
       setDiscoverableTeams(discoverable);
+      setMyInvitations(invitations);
       setSelectedTeamId((current) => {
         if (current && mine.some((team) => team.id === current)) {
           return current;
         }
+        if (activeWorkspaceTeamId && mine.some((team) => team.id === activeWorkspaceTeamId)) {
+          return activeWorkspaceTeamId;
+        }
         return mine[0]?.id || '';
       });
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '团队数据加载失败');
       setTeams([]);
       setDiscoverableTeams([]);
+      setMyInvitations([]);
       setSelectedTeamId('');
+      setError(loadError instanceof Error ? loadError.message : '空间数据加载失败');
     } finally {
       setIsLoading(false);
     }
@@ -87,9 +131,9 @@ export default function TeamWorkspacePanel({
       setMembers(memberRows);
       setJoinRequests(requestRows);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '团队详情加载失败');
       setMembers([]);
       setJoinRequests([]);
+      setError(loadError instanceof Error ? loadError.message : '空间详情加载失败');
     }
   };
 
@@ -102,21 +146,28 @@ export default function TeamWorkspacePanel({
   }, [selectedTeamId, selectedTeam?.is_owner]);
 
   useEffect(() => {
-    if (!activeWorkspaceTeamId) return;
+    if (!activeWorkspaceTeamId) {
+      return;
+    }
+
     setSelectedTeamId((current) => (current === activeWorkspaceTeamId ? current : activeWorkspaceTeamId));
   }, [activeWorkspaceTeamId]);
 
   const handleCreateTeam = async () => {
     const nextName = draftTeamName.trim();
-    if (!nextName) return;
+    if (!nextName) {
+      setError('请输入空间名称');
+      return;
+    }
 
-    setIsBusy(true);
+    setBusyKey('create-space');
     setError('');
+    setNotice('');
 
     try {
       const created = await teamService.createTeam(nextName);
       if (!created) {
-        setError('创建团队失败');
+        setError('创建空间失败');
         return;
       }
 
@@ -124,14 +175,18 @@ export default function TeamWorkspacePanel({
       setShowCreateDialog(false);
       await loadTeams();
       setSelectedTeamId(created.id);
+      setNotice('空间已创建');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '创建空间失败');
     } finally {
-      setIsBusy(false);
+      setBusyKey(null);
     }
   };
 
-  const handleJoinTeam = async (teamId: string) => {
-    setIsBusy(true);
+  const handleRequestJoin = async (teamId: string) => {
+    setBusyKey(`request:${teamId}`);
     setError('');
+    setNotice('');
 
     try {
       const ok = await teamService.requestToJoin(teamId);
@@ -141,35 +196,120 @@ export default function TeamWorkspacePanel({
       }
 
       await loadTeams();
+      setNotice('加入申请已提交，等待空间创建者处理');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '提交加入申请失败');
     } finally {
-      setIsBusy(false);
+      setBusyKey(null);
     }
   };
 
-  const handleApprove = async (requestId: string) => {
-    if (!selectedTeam) return;
+  const handleJoinByCode = async () => {
+    const nextCode = inviteCode.trim().toUpperCase();
+    if (!nextCode) {
+      setError('请输入邀请码');
+      return;
+    }
 
-    setIsBusy(true);
+    setBusyKey('join-by-code');
     setError('');
+    setNotice('');
+
+    try {
+      const joinedTeam = await teamService.joinByInviteCode(nextCode);
+      if (!joinedTeam) {
+        setError('加入空间失败');
+        return;
+      }
+
+      setInviteCode('');
+      await loadTeams();
+      setSelectedTeamId(joinedTeam.id);
+      setNotice(`已加入空间「${joinedTeam.name}」`);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '邀请码加入失败');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleAcceptInvitation = async (invitation: TeamInvitation) => {
+    setBusyKey(`accept-invitation:${invitation.id}`);
+    setError('');
+    setNotice('');
+
+    try {
+      const joinedTeam = await teamService.acceptInvitation(invitation.id);
+      if (!joinedTeam) {
+        setError('接受邀请失败');
+        return;
+      }
+
+      await loadTeams();
+      setSelectedTeamId(joinedTeam.id);
+      setNotice(`已加入空间「${joinedTeam.name}」`);
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '接受邀请失败');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleRejectInvitation = async (invitationId: string) => {
+    setBusyKey(`reject-invitation:${invitationId}`);
+    setError('');
+    setNotice('');
+
+    try {
+      const ok = await teamService.rejectInvitation(invitationId);
+      if (!ok) {
+        setError('拒绝邀请失败');
+        return;
+      }
+
+      await loadTeams();
+      setNotice('已拒绝邀请');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '拒绝邀请失败');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleApproveRequest = async (requestId: string) => {
+    if (!selectedTeam) {
+      return;
+    }
+
+    setBusyKey(`approve-request:${requestId}`);
+    setError('');
+    setNotice('');
 
     try {
       const ok = await teamService.approveJoinRequest(selectedTeam.id, requestId);
       if (!ok) {
-        setError('审批申请失败');
+        setError('通过申请失败');
         return;
       }
 
       await loadSelectedTeam(selectedTeam.id, true);
+      await loadTeams();
+      setNotice('已通过加入申请');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '通过申请失败');
     } finally {
-      setIsBusy(false);
+      setBusyKey(null);
     }
   };
 
-  const handleReject = async (requestId: string) => {
-    if (!selectedTeam) return;
+  const handleRejectRequest = async (requestId: string) => {
+    if (!selectedTeam) {
+      return;
+    }
 
-    setIsBusy(true);
+    setBusyKey(`reject-request:${requestId}`);
     setError('');
+    setNotice('');
 
     try {
       const ok = await teamService.rejectJoinRequest(selectedTeam.id, requestId);
@@ -179,8 +319,11 @@ export default function TeamWorkspacePanel({
       }
 
       await loadSelectedTeam(selectedTeam.id, true);
+      setNotice('已拒绝加入申请');
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : '拒绝申请失败');
     } finally {
-      setIsBusy(false);
+      setBusyKey(null);
     }
   };
 
@@ -188,11 +331,11 @@ export default function TeamWorkspacePanel({
     <div className="h-full overflow-y-auto bg-slate-50">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-6">
         <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <div className="text-2xl font-semibold text-slate-900">团队空间</div>
+              <div className="text-2xl font-semibold text-slate-900">空间</div>
               <div className="mt-2 text-sm text-slate-500">
-                在这里创建团队、申请加入团队，并由团队创建者审批成员。
+                这里可以创建空间、处理收到的邀请，也可以通过邀请码或申请加入其他空间。
               </div>
             </div>
             <div className="flex flex-wrap gap-3">
@@ -202,44 +345,177 @@ export default function TeamWorkspacePanel({
                   setDraftTeamName('');
                   setShowCreateDialog(true);
                 }}
-                disabled={isBusy}
-                className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+                disabled={busyKey !== null}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Plus className="h-4 w-4" />
-                创建团队
+                创建空间
               </button>
               <button
                 type="button"
                 onClick={() => void loadTeams()}
-                disabled={isBusy || isLoading}
-                className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                disabled={busyKey !== null || isLoading}
+                className="rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 刷新
               </button>
             </div>
           </div>
-          {error && (
+
+          {notice ? (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              {notice}
+            </div>
+          ) : null}
+
+          {error ? (
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
               {error}
             </div>
-          )}
+          ) : null}
         </section>
 
-        <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="space-y-6">
             <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
-                <ShieldCheck className="h-4 w-4 text-blue-600" />
-                我的团队
+                <ShieldCheck className="h-4 w-4 text-slate-900" />
+                收到的邀请
               </div>
 
               {isLoading ? (
                 <div className="rounded-2xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
-                  正在加载团队...
+                  正在加载邀请...
+                </div>
+              ) : myInvitations.length === 0 ? (
+                <div className="rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  暂时没有待处理的空间邀请
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {myInvitations.map((invitation) => {
+                    const acceptBusy = busyKey === `accept-invitation:${invitation.id}`;
+                    const rejectBusy = busyKey === `reject-invitation:${invitation.id}`;
+
+                    return (
+                      <div key={invitation.id} className="rounded-2xl border border-slate-200 px-4 py-4">
+                        <div className="font-medium text-slate-900">{invitation.team?.name || '未命名空间'}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          邀请对象：{invitation.invited_user?.email || invitation.invited_email || '当前账号'}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          发起时间：{formatDateTime(invitation.created_at)}
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleAcceptInvitation(invitation)}
+                            disabled={busyKey !== null}
+                            className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {acceptBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                            接受
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRejectInvitation(invitation.id)}
+                            disabled={busyKey !== null}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {rejectBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            拒绝
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
+                <KeyRound className="h-4 w-4 text-slate-900" />
+                邀请码加入空间
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-4">
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteCode}
+                    onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+                    placeholder="输入邀请码"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-slate-900"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleJoinByCode()}
+                  disabled={busyKey !== null}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyKey === 'join-by-code' ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+                  加入空间
+                </button>
+                <div className="mt-3 text-xs leading-5 text-slate-500">
+                  输入空间创建者提供的邀请码后，可直接加入该空间。
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Users className="h-4 w-4 text-slate-900" />
+                可申请加入的空间
+              </div>
+
+              {isLoading ? (
+                <div className="rounded-2xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  正在加载空间列表...
+                </div>
+              ) : discoverableTeams.length === 0 ? (
+                <div className="rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                  暂无可申请加入的空间
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {discoverableTeams.map((team) => (
+                    <div key={team.id} className="rounded-2xl border border-slate-200 px-4 py-4">
+                      <div className="font-medium text-slate-900">{team.name}</div>
+                      <div className="mt-1 text-xs text-slate-500">{getStatusText(team)}</div>
+                      <button
+                        type="button"
+                        onClick={() => void handleRequestJoin(team.id)}
+                        disabled={
+                          busyKey !== null ||
+                          team.membership_status === 'pending' ||
+                          team.membership_status === 'approved'
+                        }
+                        className="mt-3 inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {busyKey === `request:${team.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                        申请加入
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
+                <ShieldCheck className="h-4 w-4 text-slate-900" />
+                我的空间
+              </div>
+
+              {isLoading ? (
+                <div className="rounded-2xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+                  正在加载空间...
                 </div>
               ) : teams.length === 0 ? (
                 <div className="rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  你还没有团队，先创建一个。
+                  你还没有已加入的空间
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -249,9 +525,7 @@ export default function TeamWorkspacePanel({
                       type="button"
                       onClick={() => setSelectedTeamId(team.id)}
                       className={`w-full rounded-2xl border px-4 py-4 text-left transition ${
-                        selectedTeamId === team.id
-                          ? 'border-blue-500 bg-blue-50'
-                          : 'border-slate-200 hover:bg-slate-50'
+                        selectedTeamId === team.id ? 'border-slate-900 bg-slate-50' : 'border-slate-200 hover:bg-slate-50'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3">
@@ -260,14 +534,7 @@ export default function TeamWorkspacePanel({
                           {team.is_owner ? '创建者' : '成员'}
                         </span>
                       </div>
-                      <div className="mt-2 text-xs text-slate-500">
-                        {team.membership_status === 'approved' || team.is_owner
-                          ? '已加入'
-                          : team.membership_status || '未加入'}
-                      </div>
-                      {activeWorkspaceTeamId === team.id && (
-                        <div className="mt-2 text-xs font-medium text-blue-600">当前已进入该团队空间</div>
-                      )}
+                      <div className="mt-2 text-xs text-slate-500">{getStatusText(team)}</div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button
                           type="button"
@@ -275,9 +542,9 @@ export default function TeamWorkspacePanel({
                             event.stopPropagation();
                             navigate(`/spaces/${encodeURIComponent(team.id)}/manage`);
                           }}
-                          className="rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:bg-slate-100"
+                          className="rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-700 transition hover:bg-white"
                         >
-                          管理团队
+                          空间管理
                         </button>
                         <button
                           type="button"
@@ -285,54 +552,12 @@ export default function TeamWorkspacePanel({
                             event.stopPropagation();
                             onEnterTeamSpace?.(team);
                           }}
-                          className="rounded-xl bg-blue-600 px-3 py-2 text-xs text-white hover:bg-blue-700"
+                          className="rounded-xl bg-slate-900 px-3 py-2 text-xs text-white transition hover:bg-slate-800"
                         >
-                          进入团队空间
+                          进入空间
                         </button>
                       </div>
                     </button>
-                  ))}
-                </div>
-              )}
-            </section>
-
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
-                <Users className="h-4 w-4 text-emerald-600" />
-                可申请加入的团队
-              </div>
-
-              {isLoading ? (
-                <div className="rounded-2xl bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
-                  正在加载可加入团队...
-                </div>
-              ) : discoverableTeams.length === 0 ? (
-                <div className="rounded-2xl bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  暂无可申请团队
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {discoverableTeams.map((team) => (
-                    <div key={team.id} className="rounded-2xl border border-slate-200 px-4 py-4">
-                      <div className="font-medium text-slate-900">{team.name}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        {team.membership_status === 'pending'
-                          ? '申请中'
-                          : team.membership_status === 'approved'
-                            ? '已加入'
-                            : team.membership_status === 'rejected'
-                              ? '已拒绝，可重新申请'
-                              : '尚未申请'}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleJoinTeam(team.id)}
-                        disabled={isBusy || team.membership_status === 'pending' || team.membership_status === 'approved'}
-                        className="mt-3 inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                      >
-                        申请加入
-                      </button>
-                    </div>
                   ))}
                 </div>
               )}
@@ -342,7 +567,7 @@ export default function TeamWorkspacePanel({
           <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
             {!selectedTeam ? (
               <div className="rounded-3xl bg-slate-50 px-6 py-16 text-center text-sm text-slate-500">
-                请选择一个团队查看详情。
+                先从左侧选择一个已加入的空间查看详情。
               </div>
             ) : (
               <div className="space-y-6">
@@ -351,8 +576,8 @@ export default function TeamWorkspacePanel({
                     <div className="text-2xl font-semibold text-slate-900">{selectedTeam.name}</div>
                     <div className="mt-2 text-sm text-slate-500">
                       {selectedTeam.is_owner
-                        ? '你是该团队创建者，可以审批申请并管理资源授权。'
-                        : '你已加入该团队，可访问已明确授权给你的团队资源。'}
+                        ? '你是这个空间的创建者，可以处理成员申请并进入空间管理。'
+                        : '你已经加入这个空间，可以进入空间查看团队内容。'}
                     </div>
                   </div>
                   <div className="rounded-full bg-slate-100 px-3 py-2 text-xs text-slate-600">
@@ -364,72 +589,83 @@ export default function TeamWorkspacePanel({
                   <button
                     type="button"
                     onClick={() => navigate(`/spaces/${encodeURIComponent(selectedTeam.id)}/manage`)}
-                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                   >
                     空间管理
                   </button>
                   <button
                     type="button"
                     onClick={() => onEnterTeamSpace?.(selectedTeam)}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
+                    className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
                   >
                     <Users className="h-4 w-4" />
-                    进入团队空间
+                    进入空间
                   </button>
                 </div>
 
-                {selectedTeam.is_owner && (
+                {selectedTeam.is_owner ? (
                   <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="mb-3 text-sm font-medium text-slate-700">待审批申请</div>
+                    <div className="mb-3 text-sm font-medium text-slate-700">待处理的加入申请</div>
                     {joinRequests.length === 0 ? (
                       <div className="rounded-2xl bg-white px-4 py-6 text-center text-sm text-slate-500">
-                        当前没有待审批申请
+                        当前没有待处理的加入申请
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {joinRequests.map((request) => (
-                          <div
-                            key={request.id}
-                            className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
-                          >
-                            <div>
-                              <div className="font-medium text-slate-900">
-                                {request.user?.nickname || request.user?.email || request.user_id}
+                        {joinRequests.map((request) => {
+                          const approveBusy = busyKey === `approve-request:${request.id}`;
+                          const rejectBusy = busyKey === `reject-request:${request.id}`;
+
+                          return (
+                            <div
+                              key={request.id}
+                              className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                            >
+                              <div>
+                                <div className="font-medium text-slate-900">
+                                  {request.user?.nickname || request.user?.email || request.user_id}
+                                </div>
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {request.user?.email || request.user_id}
+                                </div>
+                                <div className="mt-1 text-xs text-slate-400">
+                                  申请时间：{formatDateTime(request.created_at)}
+                                </div>
                               </div>
-                              <div className="mt-1 text-xs text-slate-500">
-                                {request.user?.email || request.user_id}
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleApproveRequest(request.id)}
+                                  disabled={busyKey !== null}
+                                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {approveBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                                  通过
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleRejectRequest(request.id)}
+                                  disabled={busyKey !== null}
+                                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {rejectBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                                  拒绝
+                                </button>
                               </div>
                             </div>
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => void handleApprove(request.id)}
-                                disabled={isBusy}
-                                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-60"
-                              >
-                                <Check className="h-4 w-4" />
-                                通过
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleReject(request.id)}
-                                disabled={isBusy}
-                                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                              >
-                                <X className="h-4 w-4" />
-                                拒绝
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>
-                )}
+                ) : null}
 
                 <div>
                   <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                    <div className="text-sm font-medium text-slate-700">已加入成员</div>
+                    <div className="text-sm font-medium text-slate-700">
+                      成员列表
+                      <span className="ml-2 text-slate-400">{members.length} 人</span>
+                    </div>
                     <div className="relative w-full max-w-sm">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                       <input
@@ -437,7 +673,7 @@ export default function TeamWorkspacePanel({
                         value={memberQuery}
                         onChange={(event) => setMemberQuery(event.target.value)}
                         placeholder="搜索成员昵称或邮箱"
-                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm outline-none focus:border-blue-500"
+                        className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-slate-900"
                       />
                     </div>
                   </div>
@@ -455,7 +691,10 @@ export default function TeamWorkspacePanel({
                           </div>
                           <div className="mt-1 text-xs text-slate-500">{member.user?.email || member.user_id}</div>
                           <div className="mt-3 text-xs text-slate-500">
-                            状态：{member.status === 'approved' ? '已通过' : member.status}
+                            身份：{member.user_id === selectedTeam.owner_user_id ? '创建者' : '成员'}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-400">
+                            加入时间：{formatDateTime(member.created_at)}
                           </div>
                         </div>
                       ))}
@@ -470,17 +709,19 @@ export default function TeamWorkspacePanel({
 
       <NameInputModal
         isOpen={showCreateDialog}
-        title="创建团队"
-        description="先输入团队名称，再创建团队。创建后你将自动成为团队创建者。"
-        label="团队名称"
+        title="创建空间"
+        description="先输入空间名称，再创建空间。创建后你将自动成为该空间创建者。"
+        label="空间名称"
         value={draftTeamName}
-        placeholder="请输入团队名称"
-        confirmText={isBusy ? '创建中...' : '创建团队'}
+        placeholder="请输入空间名称"
+        confirmText={busyKey === 'create-space' ? '创建中...' : '创建空间'}
         cancelText="取消"
         onChange={setDraftTeamName}
         onConfirm={() => void handleCreateTeam()}
         onCancel={() => {
-          if (isBusy) return;
+          if (busyKey === 'create-space') {
+            return;
+          }
           setShowCreateDialog(false);
         }}
       />

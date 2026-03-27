@@ -31,6 +31,23 @@ export interface TeamMember {
   user?: User;
 }
 
+export interface TeamInvitation {
+  id: string;
+  team_id: string;
+  invite_type: 'code' | 'email';
+  code: string | null;
+  invited_email: string | null;
+  invited_user_id: string | null;
+  status: 'pending' | 'accepted' | 'declined' | 'revoked';
+  created_by_user_id: string;
+  accepted_by_user_id: string | null;
+  accepted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  team?: Team;
+  invited_user?: User;
+}
+
 export interface ResourcePermission {
   id: string;
   team_id: string;

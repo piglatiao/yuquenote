@@ -148,6 +148,46 @@ export function teamMemberRowToModel(row) {
   };
 }
 
+export function teamInvitationRowToModel(row) {
+  return {
+    id: row.id,
+    team_id: row.team_id,
+    invite_type: row.invite_type,
+    code: row.code ?? null,
+    invited_email: row.invited_email ?? null,
+    invited_user_id: row.invited_user_id ?? null,
+    status: row.status,
+    created_by_user_id: row.created_by_user_id,
+    accepted_by_user_id: row.accepted_by_user_id ?? null,
+    accepted_at: row.accepted_at ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    team: row.team_ref_id
+      ? teamRowToModel({
+          id: row.team_ref_id,
+          name: row.team_name,
+          owner_user_id: row.team_owner_user_id,
+          avatar_url: row.team_avatar_url,
+          member_limit: row.team_member_limit,
+          created_at: row.team_created_at,
+          updated_at: row.team_updated_at,
+          membership_status: row.team_membership_status,
+          is_owner: row.team_is_owner,
+        })
+      : undefined,
+    invited_user: row.invited_user_ref_id
+      ? {
+          id: row.invited_user_ref_id,
+          email: row.invited_user_email,
+          nickname: row.invited_user_nickname,
+          avatar_url: row.invited_user_avatar_url,
+          created_at: row.invited_user_created_at,
+          updated_at: row.invited_user_updated_at,
+        }
+      : undefined,
+  };
+}
+
 export function resourcePermissionRowToModel(row) {
   return {
     id: row.id,
@@ -337,6 +377,21 @@ db.exec(`
     UNIQUE(team_id, user_id)
   );
 
+  CREATE TABLE IF NOT EXISTS team_invitations (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    invite_type TEXT NOT NULL,
+    code TEXT UNIQUE,
+    invited_email TEXT,
+    invited_user_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_by_user_id TEXT NOT NULL,
+    accepted_by_user_id TEXT,
+    accepted_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS resource_permissions (
     id TEXT PRIMARY KEY,
     team_id TEXT NOT NULL,
@@ -506,6 +561,16 @@ export function getTeamById(id) {
   return teamRowToModel(db.prepare('SELECT * FROM teams WHERE id = ?').get(id));
 }
 
+export function getTeamInvitationById(id) {
+  return db.prepare('SELECT * FROM team_invitations WHERE id = ?').get(id) || null;
+}
+
+export function getPendingTeamInvitationByCode(code) {
+  return db
+    .prepare("SELECT * FROM team_invitations WHERE code = ? AND invite_type = 'code' AND status = 'pending'")
+    .get(code) || null;
+}
+
 export function getTeamMembership(teamId, userId) {
   const row = db.prepare('SELECT * FROM team_members WHERE team_id = ? AND user_id = ?').get(teamId, userId);
   return row || null;
@@ -562,6 +627,77 @@ export function listTeamMembers(teamId, status = 'approved') {
 
 export function listTeamJoinRequests(teamId) {
   return listTeamMembers(teamId, 'pending');
+}
+
+export function searchInvitableUsers(teamId, query) {
+  const keyword = `%${query}%`;
+  const rows = db.prepare(`
+    SELECT u.*
+    FROM users u
+    LEFT JOIN team_members tm
+      ON tm.user_id = u.id
+      AND tm.team_id = ?
+      AND tm.status IN ('approved', 'pending')
+    LEFT JOIN teams t
+      ON t.id = ?
+    WHERE tm.id IS NULL
+      AND (t.owner_user_id IS NULL OR u.id <> t.owner_user_id)
+      AND (u.email LIKE ? OR u.nickname LIKE ?)
+    ORDER BY u.email COLLATE NOCASE ASC, u.nickname COLLATE NOCASE ASC
+    LIMIT 10
+  `).all(teamId, teamId, keyword, keyword);
+
+  return rows.map(publicUser);
+}
+
+export function listTeamInvitations(teamId) {
+  const rows = db.prepare(`
+    SELECT
+      ti.*,
+      u.id AS invited_user_ref_id,
+      u.email AS invited_user_email,
+      u.nickname AS invited_user_nickname,
+      u.avatar_url AS invited_user_avatar_url,
+      u.created_at AS invited_user_created_at,
+      u.updated_at AS invited_user_updated_at
+    FROM team_invitations ti
+    LEFT JOIN users u ON u.id = ti.invited_user_id
+    WHERE ti.team_id = ?
+    ORDER BY ti.created_at DESC
+  `).all(teamId);
+
+  return rows.map(teamInvitationRowToModel);
+}
+
+export function listPendingInvitationsForUser(userId, email) {
+  const rows = db.prepare(`
+    SELECT
+      ti.*,
+      t.id AS team_ref_id,
+      t.name AS team_name,
+      t.owner_user_id AS team_owner_user_id,
+      t.avatar_url AS team_avatar_url,
+      t.member_limit AS team_member_limit,
+      t.created_at AS team_created_at,
+      t.updated_at AS team_updated_at,
+      'pending' AS team_membership_status,
+      0 AS team_is_owner,
+      u.id AS invited_user_ref_id,
+      u.email AS invited_user_email,
+      u.nickname AS invited_user_nickname,
+      u.avatar_url AS invited_user_avatar_url,
+      u.created_at AS invited_user_created_at,
+      u.updated_at AS invited_user_updated_at
+    FROM team_invitations ti
+    INNER JOIN teams t ON t.id = ti.team_id
+    LEFT JOIN users u ON u.id = ti.invited_user_id
+    WHERE ti.invite_type = 'email'
+      AND ti.status = 'pending'
+      AND (ti.invited_user_id = ? OR ti.invited_email = ?)
+    ORDER BY ti.created_at DESC
+  `).all(userId, email);
+
+  return rows.map(teamInvitationRowToModel);
 }
 
 export function listResourcePermissions(teamId, resourceType, resourceId, query = '') {
