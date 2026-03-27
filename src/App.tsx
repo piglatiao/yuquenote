@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import Sidebar from './components/SidebarPanel';
+import Sidebar from './components/WorkspaceSidebar';
 import Header from './components/Header';
 import RichTextEditor from './components/RichTextEditor';
 import FileManager from './components/FileManagerGallery';
@@ -15,6 +15,7 @@ import { teamService } from './lib/databaseApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
 import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary } from './lib/types';
+import { useSearchParams } from 'react-router-dom';
 import './App.css';
 
 const DEFAULT_NOTES_FOLDER_NAME = '默认笔记文件夹';
@@ -59,6 +60,7 @@ function collectTreeIds(items: DocTreeItem[]): Set<string> {
 }
 
 function App() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showFileManager, setShowFileManager] = useState(false);
@@ -88,6 +90,31 @@ function App() {
   useEffect(() => {
     selectedDocIdRef.current = selectedDoc?.id ?? null;
   }, [selectedDoc?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const teamId = searchParams.get('team');
+    if (!teamId) {
+      setActiveWorkspaceTeam(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTeam = async () => {
+      const team = await teamService.getById(teamId);
+      if (!cancelled) {
+        setActiveWorkspaceTeam(team);
+      }
+    };
+
+    void loadTeam();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, searchParams]);
 
   const visibleDocTree = useMemo(() => {
     return filterDocTreeByWorkspace(docTree, activeWorkspaceTeam?.id ?? null);
@@ -135,14 +162,43 @@ function App() {
     setDocTree(tree);
   };
 
-  const handleLogin = async () => {
+  const handleSessionChange = useCallback(async () => {
     const currentUser = await authService.init();
     setUser(currentUser);
-    await loadDocuments();
+    setPendingPreviewFileId(null);
+    setShowFileManager(false);
+    setSelectedDoc(null);
+    setDocTitle('');
+    setContent('');
+    setShowComments(false);
+    setShowTodos(false);
+    setActiveTab('docs');
+    if (!searchParams.get('team')) {
+      setActiveWorkspaceTeam(null);
+    }
+    if (currentUser) {
+      await loadDocuments();
+    } else {
+      setDocTree([]);
+    }
+  }, [searchParams]);
+
+  const handleUserRefresh = useCallback(async () => {
+    const currentUser = await authService.init();
+    setUser(currentUser);
+  }, []);
+
+  const handleLogin = async () => {
+    await handleSessionChange();
   };
 
   const handleLogout = async () => {
     await authService.logout();
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('team');
+      return next;
+    });
     setUser(null);
     setDocTree([]);
     setSelectedDoc(null);
@@ -268,6 +324,11 @@ function App() {
   }, []);
 
   const handleEnterTeamSpace = useCallback((team: Team) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('team', team.id);
+      return next;
+    });
     setActiveWorkspaceTeam(team);
     setPendingPreviewFileId(null);
     setShowFileManager(false);
@@ -277,12 +338,17 @@ function App() {
     setShowComments(false);
     setShowTodos(false);
     setActiveTab('docs');
-  }, []);
+  }, [setSearchParams]);
 
   const handleLeaveTeamSpace = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('team');
+      return next;
+    });
     setActiveWorkspaceTeam(null);
     setPendingPreviewFileId(null);
-  }, []);
+  }, [setSearchParams]);
 
   const findFolderByTitle = (items: DocTreeItem[], title: string): DocTreeItem | null => {
     for (const item of items) {
@@ -511,22 +577,42 @@ function App() {
     const targetTeamId = document.team_id ?? null;
     if (targetTeamId) {
       const team = await teamService.getById(targetTeamId);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('team', targetTeamId);
+        return next;
+      });
       setActiveWorkspaceTeam(team);
     } else {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('team');
+        return next;
+      });
       setActiveWorkspaceTeam(null);
     }
     setPendingPreviewFileId(null);
     setActiveTab('docs');
     setShowFileManager(false);
     await openDocumentById(document.id);
-  }, [openDocumentById]);
+  }, [openDocumentById, setSearchParams]);
 
   const handleOpenPublicFile = useCallback(async (file: PublicFileSummary) => {
     const targetTeamId = file.team_id ?? null;
     if (targetTeamId) {
       const team = await teamService.getById(targetTeamId);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('team', targetTeamId);
+        return next;
+      });
       setActiveWorkspaceTeam(team);
     } else {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('team');
+        return next;
+      });
       setActiveWorkspaceTeam(null);
     }
     setSelectedDoc(null);
@@ -535,21 +621,17 @@ function App() {
     setPendingPreviewFileId(file.id);
     setActiveTab('files');
     setShowFileManager(true);
-  }, []);
+  }, [setSearchParams]);
 
   const headerTitle = showFileManager
-    ? activeWorkspaceTeam
-      ? `${activeWorkspaceTeam.name} · 团队文件`
-      : '文件管理'
+    ? '文件管理'
     : activeTab === 'teams'
       ? '团队空间'
       : activeTab === 'public'
         ? '公开资源'
         : selectedDoc
           ? docTitle
-          : activeWorkspaceTeam
-            ? `${activeWorkspaceTeam.name} · 团队空间`
-            : docTitle;
+          : '开始';
 
   // Loading state
   if (isLoading) {
@@ -584,6 +666,11 @@ function App() {
         onDeleteDoc={handleDeleteDoc}
         onToggleStar={handleToggleStar}
         onLogout={handleLogout}
+        onSessionChange={handleSessionChange}
+        onUserRefresh={handleUserRefresh}
+        onEnterTeamSpace={handleEnterTeamSpace}
+        onLeaveTeamSpace={handleLeaveTeamSpace}
+        activeWorkspaceTeam={activeWorkspaceTeam}
         user={user}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
@@ -605,33 +692,6 @@ function App() {
           showTodos={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
           onToggleTodos={() => setShowTodos(!showTodos)}
         />
-
-        {activeWorkspaceTeam && (
-          <div className="flex items-center justify-between gap-4 border-b border-blue-100 bg-blue-50 px-4 py-3">
-            <div className="min-w-0">
-              <div className="text-sm font-medium text-blue-900">当前团队空间：{activeWorkspaceTeam.name}</div>
-              <div className="mt-1 text-xs text-blue-700">
-                当前文档区已切到该团队，可继续管理团队内的文档与分享。
-              </div>
-            </div>
-            <div className="flex shrink-0 flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveTab('teams')}
-                className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
-              >
-                管理团队
-              </button>
-              <button
-                type="button"
-                onClick={handleLeaveTeamSpace}
-                className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                退出团队空间
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Content area */}
         <div className="flex-1 overflow-hidden">

@@ -278,6 +278,15 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/users') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const rows = db.prepare('SELECT * FROM users ORDER BY created_at ASC').all();
+    json(res, 200, rows.map(publicUser));
+    return;
+  }
+
   if (req.method === 'GET' && /^\/api\/users\/[^/]+$/.test(url.pathname)) {
     const userId = decodeURIComponent(url.pathname.replace('/api/users/', ''));
     const user = getUserById(userId);

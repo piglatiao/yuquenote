@@ -6,6 +6,7 @@ import './index.css'
 import App from './App.tsx'
 import PublicLibraryStandalone from './pages/PublicLibraryStandalone.tsx'
 import SharePageAccess from './pages/SharePageAccess.tsx'
+import SpaceManagementPage from './pages/SpaceManagementPage.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -15,6 +16,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<App />} />
           <Route path="/public" element={<PublicLibraryStandalone />} />
           <Route path="/share/:token" element={<SharePageAccess />} />
+          <Route path="/spaces/:teamId/manage" element={<SpaceManagementPage />} />
         </Routes>
       </BrowserRouter>
     </ErrorBoundary>

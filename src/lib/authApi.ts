@@ -27,6 +27,10 @@ export const authService = {
     return readStoredUser();
   },
 
+  async listUsers(): Promise<User[]> {
+    return apiRequest<User[]>('/users');
+  },
+
   async login(credentials: LoginCredentials): Promise<{ user?: User; error?: string }> {
     try {
       const response = await apiRequest<{ user: User }>('/auth/login', toJsonRequest(credentials, { method: 'POST' }));
@@ -49,6 +53,16 @@ export const authService = {
 
   async logout(): Promise<void> {
     writeStoredUser(null);
+  },
+
+  async switchUser(userId: string): Promise<{ user?: User; error?: string }> {
+    try {
+      const user = await apiRequest<User>(`/users/${userId}`);
+      writeStoredUser(user, Boolean(localStorage.getItem(AUTH_TOKEN_KEY)));
+      return { user };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Switch account failed.' };
+    }
   },
 
   async getUserProfile(userId: string): Promise<User | null> {

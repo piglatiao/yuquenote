@@ -3,6 +3,7 @@ import { Check, Plus, Search, ShieldCheck, Users, X } from 'lucide-react';
 import NameInputModal from './NameInputModal';
 import { teamService } from '../lib/databaseApi';
 import type { Team, TeamMember } from '../lib/types';
+import { useNavigate } from 'react-router-dom';
 
 interface TeamWorkspacePanelProps {
   activeWorkspaceTeamId?: string | null;
@@ -13,6 +14,7 @@ export default function TeamWorkspacePanel({
   activeWorkspaceTeamId = null,
   onEnterTeamSpace,
 }: TeamWorkspacePanelProps) {
+  const navigate = useNavigate();
   const [teams, setTeams] = useState<Team[]>([]);
   const [discoverableTeams, setDiscoverableTeams] = useState<Team[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState('');
@@ -98,6 +100,11 @@ export default function TeamWorkspacePanel({
   useEffect(() => {
     void loadSelectedTeam(selectedTeamId, !!selectedTeam?.is_owner);
   }, [selectedTeamId, selectedTeam?.is_owner]);
+
+  useEffect(() => {
+    if (!activeWorkspaceTeamId) return;
+    setSelectedTeamId((current) => (current === activeWorkspaceTeamId ? current : activeWorkspaceTeamId));
+  }, [activeWorkspaceTeamId]);
 
   const handleCreateTeam = async () => {
     const nextName = draftTeamName.trim();
@@ -266,7 +273,7 @@ export default function TeamWorkspacePanel({
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setSelectedTeamId(team.id);
+                            navigate(`/spaces/${encodeURIComponent(team.id)}/manage`);
                           }}
                           className="rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:bg-slate-100"
                         >
@@ -354,6 +361,13 @@ export default function TeamWorkspacePanel({
                 </div>
 
                 <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/spaces/${encodeURIComponent(selectedTeam.id)}/manage`)}
+                    className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    空间管理
+                  </button>
                   <button
                     type="button"
                     onClick={() => onEnterTeamSpace?.(selectedTeam)}
