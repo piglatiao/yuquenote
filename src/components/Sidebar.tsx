@@ -29,7 +29,7 @@ interface SidebarProps {
   docTree: DocTreeItem[];
   onCreateDoc: (parentId?: string | null) => void;
   onCreateFolder: (parentId?: string | null) => void;
-  onRenameDoc: (id: string, title: string) => void;
+  onRequestRenameDoc: (id: string, title: string) => void;
   onDeleteDoc: (id: string) => void;
   onToggleStar: (id: string) => void;
   onLogout: () => void;
@@ -47,7 +47,7 @@ export default function Sidebar({
   docTree,
   onCreateDoc,
   onCreateFolder,
-  onRenameDoc,
+  onRequestRenameDoc,
   onDeleteDoc,
   onToggleStar,
   onLogout,
@@ -444,14 +444,7 @@ export default function Sidebar({
                 closeContextMenu();
                 return;
               }
-
-              const nextTitle = window.prompt('请输入新名称', target.title)?.trim();
-              if (!nextTitle || nextTitle === target.title) {
-                closeContextMenu();
-                return;
-              }
-
-              onRenameDoc(target.id, nextTitle);
+              onRequestRenameDoc(target.id, target.title);
               closeContextMenu();
             }}
             className="w-full px-4 py-2 text-sm text-left hover:bg-gray-50 flex items-center gap-2 text-yuque-text"

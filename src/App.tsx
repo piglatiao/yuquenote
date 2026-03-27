@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import RichTextEditor from './components/RichTextEditor';
@@ -7,6 +7,7 @@ import Login from './components/Login';
 import CommentSection from './components/CommentSection';
 import TodoList from './components/TodoList';
 import ShareModal from './components/ShareModal';
+import NameInputModal from './components/NameInputModal';
 import { authService } from './lib/authApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
@@ -14,6 +15,17 @@ import type { User, Document } from './lib/types';
 import './App.css';
 
 const DEFAULT_NOTES_FOLDER_NAME = '默认笔记文件夹';
+const AUTOSAVE_DELAY_MS = 1200;
+
+type NameDialogMode = 'create_doc' | 'create_folder' | 'rename';
+
+interface NameDialogState {
+  mode: NameDialogMode;
+  value: string;
+  fallbackValue: string;
+  parentId: string | null;
+  docId?: string;
+}
 
 function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -34,6 +46,15 @@ function App() {
   const [showShareModal, setShowShareModal] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [showTodos, setShowTodos] = useState(false);
+  const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
+  const selectedDocIdRef = useRef<string | null>(null);
+  const editVersionRef = useRef(0);
+  const isSavingRef = useRef(false);
+  const pendingSaveRef = useRef(false);
+
+  useEffect(() => {
+    selectedDocIdRef.current = selectedDoc?.id ?? null;
+  }, [selectedDoc?.id]);
 
   // Initialize app
   useEffect(() => {
@@ -95,6 +116,8 @@ function App() {
       setDocTitle(fullDoc.title);
       setContent(fullDoc.content);
       setIsEditing(false);
+      editVersionRef.current = 0;
+      pendingSaveRef.current = false;
       setLastSaved(new Date(fullDoc.updated_at));
       setShowFileManager(false);
       setShowComments(false);
@@ -110,30 +133,66 @@ function App() {
   }, []);
 
   const handleContentChange = useCallback((newContent: string) => {
+    if (newContent === content) return;
     setContent(newContent);
+    editVersionRef.current += 1;
     setIsEditing(true);
-  }, []);
+  }, [content]);
 
   const handleSave = useCallback(async () => {
-    if (!selectedDoc) return;
+    const docId = selectedDoc?.id;
+    if (!docId) return false;
 
-    const updated = await documentService.update(selectedDoc.id, {
-      title: docTitle,
-      content,
-    });
-
-    if (updated) {
-      setSelectedDoc(updated);
-      setIsEditing(false);
-      setLastSaved(new Date());
-      await loadDocuments();
+    if (isSavingRef.current) {
+      pendingSaveRef.current = true;
+      return false;
     }
-  }, [selectedDoc, docTitle, content]);
+
+    isSavingRef.current = true;
+    const versionAtSaveStart = editVersionRef.current;
+
+    try {
+      const updated = await documentService.update(docId, {
+        title: docTitle,
+        content,
+      });
+      if (!updated) return false;
+
+      await loadDocuments();
+      setSelectedDoc((prev) => (prev && prev.id === docId ? updated : prev));
+      setLastSaved(new Date(updated.updated_at));
+
+      if (selectedDocIdRef.current === docId && editVersionRef.current === versionAtSaveStart) {
+        setIsEditing(false);
+      }
+      return true;
+    } finally {
+      isSavingRef.current = false;
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false;
+        window.setTimeout(() => {
+          void handleSave();
+        }, 0);
+      }
+    }
+  }, [selectedDoc?.id, docTitle, content]);
 
   const handleTitleChange = useCallback((newTitle: string) => {
+    if (newTitle === docTitle) return;
     setDocTitle(newTitle);
+    editVersionRef.current += 1;
     setIsEditing(true);
-  }, []);
+  }, [docTitle]);
+
+  useEffect(() => {
+    if (!selectedDoc || showFileManager || !isEditing) return;
+
+    const timer = window.setTimeout(() => {
+      void handleSave();
+    }, AUTOSAVE_DELAY_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedDoc?.id, showFileManager, isEditing, docTitle, content, handleSave]);
 
   const handleTabChange = useCallback((tab: string) => {
     setActiveTab(tab);
@@ -158,15 +217,19 @@ function App() {
     return null;
   };
 
-  const ensureDefaultNotesFolderId = async (): Promise<string | null> => {
-    const latestTree = await documentService.getTree();
-    const rootMatch = latestTree.find(
+  const findDefaultNotesFolderId = (tree: DocTreeItem[]): string | null => {
+    const rootMatch = tree.find(
       (item) => item.icon === 'folder' && item.parent_id === null && item.title === DEFAULT_NOTES_FOLDER_NAME
     );
     if (rootMatch) return rootMatch.id;
 
-    const anyMatch = findFolderByTitle(latestTree, DEFAULT_NOTES_FOLDER_NAME);
-    if (anyMatch) return anyMatch.id;
+    return findFolderByTitle(tree, DEFAULT_NOTES_FOLDER_NAME)?.id ?? null;
+  };
+
+  const ensureDefaultNotesFolderId = async (): Promise<string | null> => {
+    const latestTree = await documentService.getTree();
+    const existingFolderId = findDefaultNotesFolderId(latestTree);
+    if (existingFolderId) return existingFolderId;
 
     const createdFolder = await documentService.create({
       title: DEFAULT_NOTES_FOLDER_NAME,
@@ -215,22 +278,68 @@ function App() {
     return `${baseName} ${index}`;
   };
 
-  const promptForCreateName = (type: 'doc' | 'folder', suggestedName: string): string | null => {
-    const message = type === 'folder' ? '请输入文件夹名称' : '请输入笔记名称';
-    const input = window.prompt(message, suggestedName);
-    if (input === null) return null;
-    const trimmed = input.trim();
-    return trimmed || suggestedName;
+  const handleCreateDoc = async (parentId: string | null = null) => {
+    const latestTree = await documentService.getTree();
+    const suggestedParentId = parentId ?? findDefaultNotesFolderId(latestTree);
+    const suggestedName = suggestedParentId
+      ? getAutoName(latestTree, suggestedParentId, 'file', '新建笔记')
+      : '新建笔记';
+
+    setNameDialog({
+      mode: 'create_doc',
+      value: suggestedName,
+      fallbackValue: suggestedName,
+      parentId,
+    });
   };
 
-  const handleCreateDoc = async (parentId: string | null = null) => {
-    const targetParentId = parentId ?? (await ensureDefaultNotesFolderId());
-    if (!targetParentId) return;
-
+  const handleCreateFolder = async (parentId: string | null = null) => {
     const latestTree = await documentService.getTree();
-    const suggestedName = getAutoName(latestTree, targetParentId, 'file', '新建笔记');
-    const finalName = promptForCreateName('doc', suggestedName);
+    const suggestedName = getAutoName(latestTree, parentId, 'folder', '新建文件夹');
+    setNameDialog({
+      mode: 'create_folder',
+      value: suggestedName,
+      fallbackValue: suggestedName,
+      parentId,
+    });
+  };
+
+  const handleNameDialogConfirm = async () => {
+    if (!nameDialog) return;
+
+    const dialog = nameDialog;
+    const finalName = dialog.value.trim() || dialog.fallbackValue;
+    setNameDialog(null);
+
     if (!finalName) return;
+
+    if (dialog.mode === 'rename') {
+      if (!dialog.docId || finalName === dialog.fallbackValue) return;
+      await handleRenameDoc(dialog.docId, finalName);
+      return;
+    }
+
+    if (dialog.mode === 'create_folder') {
+      const newFolder = await documentService.create({
+        title: finalName,
+        content: '<p></p>',
+        parent_id: dialog.parentId,
+        icon: 'folder',
+      });
+      if (newFolder) {
+        await loadDocuments();
+        setSelectedDoc(newFolder);
+        setDocTitle(newFolder.title);
+        setContent(newFolder.content);
+        setIsEditing(false);
+        editVersionRef.current = 0;
+        setLastSaved(new Date(newFolder.updated_at));
+      }
+      return;
+    }
+
+    const targetParentId = dialog.parentId ?? (await ensureDefaultNotesFolderId());
+    if (!targetParentId) return;
 
     const newDoc = await documentService.create({
       title: finalName,
@@ -243,28 +352,9 @@ function App() {
       setSelectedDoc(newDoc);
       setDocTitle(newDoc.title);
       setContent(newDoc.content);
-      setIsEditing(true);
-    }
-  };
-
-  const handleCreateFolder = async (parentId: string | null = null) => {
-    const latestTree = await documentService.getTree();
-    const suggestedName = getAutoName(latestTree, parentId, 'folder', '新建文件夹');
-    const finalName = promptForCreateName('folder', suggestedName);
-    if (!finalName) return;
-
-    const newFolder = await documentService.create({
-      title: finalName,
-      content: '<p></p>',
-      parent_id: parentId,
-      icon: 'folder',
-    });
-    if (newFolder) {
-      await loadDocuments();
-      setSelectedDoc(newFolder);
-      setDocTitle(newFolder.title);
-      setContent(newFolder.content);
-      setIsEditing(true);
+      setIsEditing(false);
+      editVersionRef.current = 0;
+      setLastSaved(new Date(newDoc.updated_at));
     }
   };
   const findNodeById = (items: DocTreeItem[], id: string): DocTreeItem | null => {
@@ -298,14 +388,29 @@ function App() {
     }
   };
   const handleRenameDoc = async (id: string, title: string) => {
+    const hasUnsavedChangesOnCurrentDoc = isEditing && selectedDoc?.id === id;
     const updated = await documentService.update(id, { title });
     if (!updated) return;
     await loadDocuments();
     if (selectedDoc?.id === id) {
       setSelectedDoc(updated);
       setDocTitle(updated.title);
-      setIsEditing(true);
     }
+    setLastSaved(new Date(updated.updated_at));
+    if (!hasUnsavedChangesOnCurrentDoc) {
+      setIsEditing(false);
+      editVersionRef.current = 0;
+    }
+  };
+
+  const handleRequestRenameDoc = (id: string, currentTitle: string) => {
+    setNameDialog({
+      mode: 'rename',
+      value: currentTitle,
+      fallbackValue: currentTitle,
+      parentId: null,
+      docId: id,
+    });
   };
 
   const handleToggleStar = async (id: string) => {
@@ -347,7 +452,7 @@ function App() {
         docTree={docTree}
         onCreateDoc={handleCreateDoc}
         onCreateFolder={handleCreateFolder}
-        onRenameDoc={handleRenameDoc}
+        onRequestRenameDoc={handleRequestRenameDoc}
         onDeleteDoc={handleDeleteDoc}
         onToggleStar={handleToggleStar}
         onLogout={handleLogout}
@@ -430,6 +535,29 @@ function App() {
       </div>
 
       {/* Share Modal */}
+      <NameInputModal
+        isOpen={!!nameDialog}
+        title={
+          nameDialog?.mode === 'rename'
+            ? '重命名'
+            : nameDialog?.mode === 'create_folder'
+              ? '新建文件夹'
+              : '新建笔记'
+        }
+        description={
+          nameDialog?.mode === 'rename'
+            ? '修改后会立即更新到文档树。'
+            : '已生成默认名称，可直接修改后创建。'
+        }
+        label={nameDialog?.mode === 'create_folder' ? '文件夹名称' : '名称'}
+        value={nameDialog?.value ?? ''}
+        placeholder={nameDialog?.fallbackValue ?? ''}
+        confirmText={nameDialog?.mode === 'rename' ? '保存' : '创建'}
+        onChange={(value) => setNameDialog((prev) => (prev ? { ...prev, value } : prev))}
+        onConfirm={() => void handleNameDialogConfirm()}
+        onCancel={() => setNameDialog(null)}
+      />
+
       {selectedDoc && (
         <ShareModal
           isOpen={showShareModal}
