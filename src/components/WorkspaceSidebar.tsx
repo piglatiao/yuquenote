@@ -584,7 +584,7 @@ export default function WorkspaceSidebar({
               </button>
 
               {accountMenuOpen && (
-                <div className="absolute right-0 top-[calc(100%+8px)] z-50 w-[min(320px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[min(320px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
                   <div className="rounded-2xl bg-slate-50 px-4 py-4">
                     <div className="text-sm font-semibold text-slate-900">{user?.nickname || '当前账号'}</div>
                     <div className="mt-1 text-sm text-slate-500">{user?.email}</div>
