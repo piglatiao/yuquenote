@@ -12,14 +12,26 @@ import {
   deleteDocumentRecursive,
   documentRowToModel,
   getDocumentById,
+  getFileById,
   getFileType,
   getNextOrderIndex,
+  getResourcePermission,
+  getShareLinkByToken,
+  getTeamById,
+  getTeamMembership,
   getUserById,
   listComments,
+  listDiscoverableTeams,
   listDocuments,
   listFiles,
   listFolders,
+  listPublicDocuments,
+  listPublicFiles,
+  listResourcePermissions,
   listShareLinks,
+  listTeamJoinRequests,
+  listTeamMembers,
+  listTeamsForUser,
   listTodos,
   mimeTypeForExtension,
   newId,
@@ -32,6 +44,155 @@ import {
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
 const API_PORT = Number(process.env.YUQUE_API_PORT || 3001);
+const RESOURCE_TYPES = new Set(['document', 'file']);
+
+function getCurrentUserId(req) {
+  const raw = req.headers['x-user-id'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return sanitizeNullable(value);
+}
+
+function getCurrentUser(req) {
+  const userId = getCurrentUserId(req);
+  return userId ? getUserById(userId) : null;
+}
+
+function requireAuth(req, res) {
+  const user = getCurrentUser(req);
+  if (!user) {
+    json(res, 401, { error: 'Please log in first.' });
+    return null;
+  }
+  return user;
+}
+
+function isApprovedTeamMember(userId, teamId) {
+  if (!userId || !teamId) return false;
+  const membership = getTeamMembership(teamId, userId);
+  return membership?.status === 'approved';
+}
+
+function isTeamOwner(userId, teamId) {
+  if (!userId || !teamId) return false;
+  const team = getTeamById(teamId);
+  return Boolean(team && team.owner_user_id === userId);
+}
+
+function canViewDocument(userId, document) {
+  if (!document) return false;
+  if (document.user_id === userId) return true;
+  const teamId = sanitizeNullable(document.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'document', document.id, userId)?.can_view);
+}
+
+function canEditDocument(userId, document) {
+  if (!document) return false;
+  if (document.user_id === userId) return true;
+  const teamId = sanitizeNullable(document.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'document', document.id, userId)?.can_edit);
+}
+
+function canDeleteDocument(userId, document) {
+  if (!document) return false;
+  if (document.user_id === userId) return true;
+  const teamId = sanitizeNullable(document.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'document', document.id, userId)?.can_delete);
+}
+
+function canViewFile(userId, file) {
+  if (!file) return false;
+  if (file.user_id === userId) return true;
+  const teamId = sanitizeNullable(file.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'file', file.id, userId)?.can_view);
+}
+
+function canEditFile(userId, file) {
+  if (!file) return false;
+  if (file.user_id === userId) return true;
+  const teamId = sanitizeNullable(file.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'file', file.id, userId)?.can_edit);
+}
+
+function canDeleteFile(userId, file) {
+  if (!file) return false;
+  if (file.user_id === userId) return true;
+  const teamId = sanitizeNullable(file.team_id);
+  if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
+  return Boolean(getResourcePermission(teamId, 'file', file.id, userId)?.can_delete);
+}
+
+function ensureTeamOwner(res, userId, teamId) {
+  if (!teamId || !isTeamOwner(userId, teamId)) {
+    json(res, 403, { error: 'Only the team owner can manage this team.' });
+    return false;
+  }
+  return true;
+}
+
+function resolveSharePayload(link) {
+  if (!link) return null;
+  if (link.document_id) {
+    return {
+      type: 'document',
+      resource: getDocumentById(link.document_id),
+    };
+  }
+  if (link.file_id) {
+    return {
+      type: 'file',
+      resource: getFileById(link.file_id),
+    };
+  }
+  return null;
+}
+
+function canAccessShareLink(userId, link, payload) {
+  if (!link || !payload?.resource) {
+    return { allowed: false, status: 404, message: 'Shared resource not found.' };
+  }
+
+  if (link.expires_at && new Date(link.expires_at).getTime() < Date.now()) {
+    return { allowed: false, status: 410, message: 'Share link has expired.' };
+  }
+
+  if (link.visibility === 'public') {
+    return { allowed: true };
+  }
+
+  if (!userId) {
+    return { allowed: false, status: 401, message: 'Please log in first.' };
+  }
+
+  if (link.visibility === 'private') {
+    const ownerId = payload.resource.user_id;
+    return ownerId === userId
+      ? { allowed: true }
+      : { allowed: false, status: 403, message: 'You do not have access to this private resource.' };
+  }
+
+  if (link.visibility === 'team') {
+    const teamId = sanitizeNullable(link.team_id) || sanitizeNullable(payload.resource.team_id);
+    if (!teamId || !isApprovedTeamMember(userId, teamId)) {
+      return { allowed: false, status: 403, message: 'You are not a member of this team.' };
+    }
+
+    const allowed =
+      payload.type === 'document'
+        ? canViewDocument(userId, payload.resource)
+        : canViewFile(userId, payload.resource);
+
+    return allowed
+      ? { allowed: true }
+      : { allowed: false, status: 403, message: 'You do not have permission to view this shared resource.' };
+  }
+
+  return { allowed: false, status: 403, message: 'Share visibility is invalid.' };
+}
 
 async function handleUploads(res, url) {
   const relativePath = decodeURIComponent(url.pathname.replace('/uploads/', ''));
@@ -138,51 +299,329 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/teams') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const scope = url.searchParams.get('scope');
+    if (scope === 'discover') {
+      json(res, 200, listDiscoverableTeams(currentUser.id));
+      return;
+    }
+
+    json(res, 200, listTeamsForUser(currentUser.id));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/teams') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const name = String(body.name || '').trim();
+    if (!name) {
+      json(res, 400, { error: 'Team name is required.' });
+      return;
+    }
+
+    const timestamp = now();
+    const teamId = newId();
+    const membershipId = newId();
+
+    db.prepare(`
+      INSERT INTO teams (id, name, owner_user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(teamId, name, currentUser.id, timestamp, timestamp);
+
+    db.prepare(`
+      INSERT INTO team_members (id, team_id, user_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'approved', ?, ?)
+    `).run(membershipId, teamId, currentUser.id, timestamp, timestamp);
+
+    json(res, 201, {
+      ...getTeamById(teamId),
+      membership_status: 'approved',
+      is_owner: true,
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/api/teams/', ''));
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (!(team.owner_user_id === currentUser.id || isApprovedTeamMember(currentUser.id, teamId))) {
+      json(res, 403, { error: 'You do not have access to this team.' });
+      return;
+    }
+
+    json(res, 200, team);
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/members$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/members', '').replace('/api/teams/', ''));
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (!(team.owner_user_id === currentUser.id || isApprovedTeamMember(currentUser.id, teamId))) {
+      json(res, 403, { error: 'You do not have access to this team.' });
+      return;
+    }
+
+    json(res, 200, listTeamMembers(teamId));
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/join-requests$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/join-requests', '').replace('/api/teams/', ''));
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    const existingMembership = getTeamMembership(teamId, currentUser.id);
+    const timestamp = now();
+
+    if (existingMembership?.status === 'approved') {
+      json(res, 409, { error: 'You are already a team member.' });
+      return;
+    }
+
+    if (existingMembership?.status === 'pending') {
+      json(res, 409, { error: 'Your join request is still pending.' });
+      return;
+    }
+
+    if (existingMembership) {
+      db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('pending', timestamp, existingMembership.id);
+      json(res, 200, { ok: true });
+      return;
+    }
+
+    db.prepare(`
+      INSERT INTO team_members (id, team_id, user_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', ?, ?)
+    `).run(newId(), teamId, currentUser.id, timestamp, timestamp);
+
+    json(res, 201, { ok: true });
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/join-requests$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/join-requests', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    json(res, 200, listTeamJoinRequests(teamId));
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/join-requests\/[^/]+\/approve$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const requestId = decodeURIComponent(segments[5]);
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const membership = db.prepare('SELECT * FROM team_members WHERE id = ? AND team_id = ?').get(requestId, teamId);
+    if (!membership) {
+      json(res, 404, { error: 'Join request not found.' });
+      return;
+    }
+
+    db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('approved', now(), requestId);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/join-requests\/[^/]+\/reject$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const requestId = decodeURIComponent(segments[5]);
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const membership = db.prepare('SELECT * FROM team_members WHERE id = ? AND team_id = ?').get(requestId, teamId);
+    if (!membership) {
+      json(res, 404, { error: 'Join request not found.' });
+      return;
+    }
+
+    db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('rejected', now(), requestId);
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/resource-permissions$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/resource-permissions', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const resourceType = String(url.searchParams.get('resourceType') || '').trim();
+    const resourceId = String(url.searchParams.get('resourceId') || '').trim();
+    if (!RESOURCE_TYPES.has(resourceType) || !resourceId) {
+      json(res, 400, { error: 'resourceType and resourceId are required.' });
+      return;
+    }
+
+    json(res, 200, listResourcePermissions(teamId, resourceType, resourceId, String(url.searchParams.get('query') || '')));
+    return;
+  }
+
+  if (req.method === 'PUT' && /^\/api\/teams\/[^/]+\/resource-permissions\/batch$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/resource-permissions/batch', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const body = await readJsonBody(req);
+    const resourceType = String(body.resource_type || '').trim();
+    const resourceId = String(body.resource_id || '').trim();
+    const entries = Array.isArray(body.entries) ? body.entries : [];
+
+    if (!RESOURCE_TYPES.has(resourceType) || !resourceId) {
+      json(res, 400, { error: 'resource_type and resource_id are required.' });
+      return;
+    }
+
+    const timestamp = now();
+    db.prepare('DELETE FROM resource_permissions WHERE team_id = ? AND resource_type = ? AND resource_id = ?').run(teamId, resourceType, resourceId);
+
+    const insert = db.prepare(`
+      INSERT INTO resource_permissions (
+        id, team_id, resource_type, resource_id, member_user_id, can_view, can_edit, can_delete, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const entry of entries) {
+      const memberUserId = sanitizeNullable(entry.member_user_id);
+      if (!memberUserId) continue;
+
+      const membership = getTeamMembership(teamId, memberUserId);
+      if (!membership || membership.status !== 'approved') continue;
+
+      const canView = Number(Boolean(entry.can_view));
+      const canEdit = Number(Boolean(entry.can_edit));
+      const canDelete = Number(Boolean(entry.can_delete));
+      if (!canView && !canEdit && !canDelete) continue;
+
+      insert.run(newId(), teamId, resourceType, resourceId, memberUserId, canView, canEdit, canDelete, timestamp, timestamp);
+    }
+
+    json(res, 200, listResourcePermissions(teamId, resourceType, resourceId));
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/public/documents') {
+    json(res, 200, listPublicDocuments());
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/public/files') {
+    json(res, 200, listPublicFiles());
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/documents') {
-    json(res, 200, listDocuments(url.searchParams.get('includeDeleted') === 'true'));
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const documents = listDocuments(url.searchParams.get('includeDeleted') === 'true').filter((document) =>
+      canViewDocument(currentUser.id, document),
+    );
+    json(res, 200, documents);
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/documents/starred') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const rows = db.prepare('SELECT * FROM documents WHERE is_starred = 1 AND is_deleted = 0 ORDER BY updated_at DESC').all();
-    json(res, 200, rows.map(documentRowToModel));
+    json(res, 200, rows.map(documentRowToModel).filter((document) => canViewDocument(currentUser.id, document)));
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/documents/trash') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const rows = db.prepare('SELECT * FROM documents WHERE is_deleted = 1 ORDER BY updated_at DESC').all();
-    json(res, 200, rows.map(documentRowToModel));
+    json(res, 200, rows.map(documentRowToModel).filter((document) => canViewDocument(currentUser.id, document)));
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/documents/recent') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const limit = Number(url.searchParams.get('limit') || 10);
     const rows = db.prepare('SELECT * FROM documents WHERE is_deleted = 0 ORDER BY updated_at DESC LIMIT ?').all(limit);
-    json(res, 200, rows.map(documentRowToModel));
+    json(res, 200, rows.map(documentRowToModel).filter((document) => canViewDocument(currentUser.id, document)));
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/documents/search') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const query = `%${String(url.searchParams.get('q') || '').trim()}%`;
     const rows = db.prepare(`
       SELECT * FROM documents
       WHERE is_deleted = 0 AND (title LIKE ? OR content LIKE ?)
       ORDER BY updated_at DESC
     `).all(query, query);
-    json(res, 200, rows.map(documentRowToModel));
+    json(res, 200, rows.map(documentRowToModel).filter((document) => canViewDocument(currentUser.id, document)));
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/documents') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
     const timestamp = now();
     const id = newId();
     const parentId = sanitizeNullable(body.parent_id);
+    const teamId = sanitizeNullable(body.team_id);
     const orderIndex = body.order_index ?? getNextOrderIndex('documents', 'parent_id', parentId);
 
+    if (teamId && !isTeamOwner(currentUser.id, teamId)) {
+      json(res, 403, { error: 'Only the team owner can create documents directly in this team.' });
+      return;
+    }
+
     db.prepare(`
-      INSERT INTO documents (id, title, content, parent_id, icon, created_at, updated_at, user_id, is_starred, order_index, is_deleted)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO documents (id, title, content, parent_id, icon, created_at, updated_at, user_id, team_id, is_starred, order_index, is_deleted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       body.title || 'Untitled',
@@ -191,7 +630,8 @@ async function handleApi(req, res, url) {
       body.icon || 'file',
       timestamp,
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
+      teamId,
       Number(Boolean(body.is_starred)),
       orderIndex,
       Number(Boolean(body.is_deleted)),
@@ -202,9 +642,16 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && /^\/api\/documents\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const document = getDocumentById(decodeURIComponent(url.pathname.replace('/api/documents/', '')));
     if (!document) {
       json(res, 404, { error: 'Document not found.' });
+      return;
+    }
+    if (!canViewDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to view this document.' });
       return;
     }
     json(res, 200, document);
@@ -212,24 +659,47 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'PATCH' && /^\/api\/documents\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/documents/', ''));
     const existing = getDocumentById(id);
     if (!existing) {
       json(res, 404, { error: 'Document not found.' });
       return;
     }
+    if (!canEditDocument(currentUser.id, existing)) {
+      json(res, 403, { error: 'You do not have permission to edit this document.' });
+      return;
+    }
 
     const body = await readJsonBody(req);
+    const nextTeamId =
+      body.team_id !== undefined
+        ? sanitizeNullable(body.team_id)
+        : existing.team_id;
+
+    if (body.team_id !== undefined && existing.user_id !== currentUser.id) {
+      json(res, 403, { error: 'Only the owner can change the document team.' });
+      return;
+    }
+
+    if (nextTeamId && existing.user_id === currentUser.id && !isTeamOwner(currentUser.id, nextTeamId)) {
+      json(res, 403, { error: 'Only the team owner can assign a document to this team.' });
+      return;
+    }
+
     db.prepare(`
       UPDATE documents
-      SET title = ?, content = ?, parent_id = ?, icon = ?, user_id = ?, is_starred = ?, order_index = ?, is_deleted = ?, updated_at = ?
+      SET title = ?, content = ?, parent_id = ?, icon = ?, user_id = ?, team_id = ?, is_starred = ?, order_index = ?, is_deleted = ?, updated_at = ?
       WHERE id = ?
     `).run(
       body.title ?? existing.title,
       body.content ?? existing.content,
       body.parent_id !== undefined ? sanitizeNullable(body.parent_id) : existing.parent_id,
       body.icon ?? existing.icon,
-      body.user_id !== undefined ? sanitizeNullable(body.user_id) : existing.user_id,
+      existing.user_id,
+      nextTeamId,
       body.is_starred !== undefined ? Number(Boolean(body.is_starred)) : Number(existing.is_starred),
       body.order_index ?? existing.order_index,
       body.is_deleted !== undefined ? Number(Boolean(body.is_deleted)) : Number(existing.is_deleted),
@@ -242,10 +712,17 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'DELETE' && /^\/api\/documents\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/documents/', ''));
     const existing = getDocumentById(id);
     if (!existing) {
       json(res, 404, { error: 'Document not found.' });
+      return;
+    }
+    if (!canDeleteDocument(currentUser.id, existing)) {
+      json(res, 403, { error: 'You do not have permission to delete this document.' });
       return;
     }
 
@@ -260,9 +737,17 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/comments') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const documentId = url.searchParams.get('documentId');
     if (!documentId) {
       json(res, 400, { error: 'documentId is required.' });
+      return;
+    }
+    const document = getDocumentById(documentId);
+    if (!document || !canViewDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to view comments for this document.' });
       return;
     }
     json(res, 200, listComments(documentId));
@@ -270,7 +755,15 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/comments') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
+    const document = getDocumentById(body.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to add comments to this document.' });
+      return;
+    }
     const timestamp = now();
     const id = newId();
 
@@ -284,7 +777,7 @@ async function handleApi(req, res, url) {
       body.content || '',
       timestamp,
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
     );
 
     const created = db.prepare(`
@@ -306,8 +799,21 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'PATCH' && /^\/api\/comments\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/comments/', ''));
     const body = await readJsonBody(req);
+    const existingComment = db.prepare('SELECT * FROM comments WHERE id = ?').get(id);
+    if (!existingComment) {
+      json(res, 404, { error: 'Comment not found.' });
+      return;
+    }
+    const document = getDocumentById(existingComment.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to edit comments for this document.' });
+      return;
+    }
     db.prepare('UPDATE comments SET content = ?, updated_at = ? WHERE id = ?').run(body.content || '', now(), id);
     const updated = db.prepare(`
       SELECT
@@ -327,7 +833,20 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'DELETE' && /^\/api\/comments\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/comments/', ''));
+    const existingComment = db.prepare('SELECT * FROM comments WHERE id = ?').get(id);
+    if (!existingComment) {
+      json(res, 404, { error: 'Comment not found.' });
+      return;
+    }
+    const document = getDocumentById(existingComment.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to delete comments for this document.' });
+      return;
+    }
     db.prepare('DELETE FROM comments WHERE parent_id = ?').run(id);
     db.prepare('DELETE FROM comments WHERE id = ?').run(id);
     sendEmpty(res);
@@ -335,9 +854,17 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/todos') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const documentId = url.searchParams.get('documentId');
     if (!documentId) {
       json(res, 400, { error: 'documentId is required.' });
+      return;
+    }
+    const document = getDocumentById(documentId);
+    if (!document || !canViewDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to view todos for this document.' });
       return;
     }
     json(res, 200, listTodos(documentId));
@@ -345,7 +872,15 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/todos') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
+    const document = getDocumentById(body.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to add todos to this document.' });
+      return;
+    }
     const timestamp = now();
     const id = newId();
     const orderIndex = body.order_index ?? getNextOrderIndex('todos', 'document_id', body.document_id);
@@ -363,7 +898,7 @@ async function handleApi(req, res, url) {
       JSON.stringify(Array.isArray(body.tags) ? body.tags : []),
       timestamp,
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
       orderIndex,
     );
 
@@ -372,10 +907,18 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && /^\/api\/todos\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/todos/', ''));
     const todo = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
     if (!todo) {
       json(res, 404, { error: 'Todo not found.' });
+      return;
+    }
+    const document = getDocumentById(todo.document_id);
+    if (!document || !canViewDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to view this todo.' });
       return;
     }
     json(res, 200, todoRowToModel(todo));
@@ -383,10 +926,18 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'PATCH' && /^\/api\/todos\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/todos/', ''));
     const existing = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
     if (!existing) {
       json(res, 404, { error: 'Todo not found.' });
+      return;
+    }
+    const document = getDocumentById(existing.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to edit this todo.' });
       return;
     }
 
@@ -412,17 +963,37 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'DELETE' && /^\/api\/todos\/[^/]+$/.test(url.pathname)) {
-    db.prepare('DELETE FROM todos WHERE id = ?').run(decodeURIComponent(url.pathname.replace('/api/todos/', '')));
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const id = decodeURIComponent(url.pathname.replace('/api/todos/', ''));
+    const existing = db.prepare('SELECT * FROM todos WHERE id = ?').get(id);
+    if (!existing) {
+      json(res, 404, { error: 'Todo not found.' });
+      return;
+    }
+    const document = getDocumentById(existing.document_id);
+    if (!document || !canEditDocument(currentUser.id, document)) {
+      json(res, 403, { error: 'You do not have permission to delete this todo.' });
+      return;
+    }
+    db.prepare('DELETE FROM todos WHERE id = ?').run(id);
     sendEmpty(res);
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/folders') {
-    json(res, 200, listFolders());
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, db.prepare('SELECT * FROM folders WHERE user_id = ? ORDER BY order_index, created_at').all(currentUser.id));
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/folders') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
     const timestamp = now();
     const id = newId();
@@ -439,7 +1010,7 @@ async function handleApi(req, res, url) {
       body.icon || 'folder',
       timestamp,
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
       orderIndex,
     );
 
@@ -448,20 +1019,31 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/files') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     if (url.searchParams.get('scope') === 'all') {
-      json(res, 200, db.prepare('SELECT * FROM files ORDER BY created_at DESC').all());
+      const rows = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all();
+      json(res, 200, rows.filter((file) => canViewFile(currentUser.id, file)));
       return;
     }
 
-    json(res, 200, listFiles(sanitizeNullable(url.searchParams.get('folderId'))));
+    json(res, 200, listFiles(sanitizeNullable(url.searchParams.get('folderId'))).filter((file) => canViewFile(currentUser.id, file)));
     return;
   }
 
   if (req.method === 'GET' && /^\/api\/files\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/files/', ''));
-    const file = db.prepare('SELECT * FROM files WHERE id = ?').get(id);
+    const file = getFileById(id);
     if (!file) {
       json(res, 404, { error: 'File not found.' });
+      return;
+    }
+    if (!canViewFile(currentUser.id, file)) {
+      json(res, 403, { error: 'You do not have permission to view this file.' });
       return;
     }
     json(res, 200, file);
@@ -469,6 +1051,9 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/files/upload') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const name = String(url.searchParams.get('name') || 'file.bin');
     const mimeType = String(url.searchParams.get('mimeType') || 'application/octet-stream');
     const fileType = getFileType(name, mimeType);
@@ -490,15 +1075,24 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/files') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
     const timestamp = now();
     const id = newId();
     const fileType = body.type || getFileType(body.name || '', '');
     const fileUrl = body.url || `/uploads/${body.storage_path}`;
+    const teamId = sanitizeNullable(body.team_id);
+
+    if (teamId && !isTeamOwner(currentUser.id, teamId)) {
+      json(res, 403, { error: 'Only the team owner can create files directly in this team.' });
+      return;
+    }
 
     db.prepare(`
-      INSERT INTO files (id, name, type, size, url, thumbnail_url, storage_path, folder_id, created_at, updated_at, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO files (id, name, type, size, url, thumbnail_url, storage_path, folder_id, created_at, updated_at, user_id, team_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       body.name,
@@ -510,7 +1104,8 @@ async function handleApi(req, res, url) {
       sanitizeNullable(body.folder_id),
       timestamp,
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
+      teamId,
     );
 
     json(res, 201, db.prepare('SELECT * FROM files WHERE id = ?').get(id));
@@ -518,21 +1113,44 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'PATCH' && /^\/api\/files\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/files/', ''));
-    const existing = db.prepare('SELECT * FROM files WHERE id = ?').get(id);
+    const existing = getFileById(id);
     if (!existing) {
       json(res, 404, { error: 'File not found.' });
       return;
     }
+    if (!canEditFile(currentUser.id, existing)) {
+      json(res, 403, { error: 'You do not have permission to edit this file.' });
+      return;
+    }
 
     const body = await readJsonBody(req);
+    const nextTeamId =
+      body.team_id !== undefined
+        ? sanitizeNullable(body.team_id)
+        : existing.team_id;
+
+    if (body.team_id !== undefined && existing.user_id !== currentUser.id) {
+      json(res, 403, { error: 'Only the owner can change the file team.' });
+      return;
+    }
+
+    if (nextTeamId && existing.user_id === currentUser.id && !isTeamOwner(currentUser.id, nextTeamId)) {
+      json(res, 403, { error: 'Only the team owner can assign a file to this team.' });
+      return;
+    }
+
     db.prepare(`
       UPDATE files
-      SET name = ?, folder_id = ?, updated_at = ?
+      SET name = ?, folder_id = ?, team_id = ?, updated_at = ?
       WHERE id = ?
     `).run(
       body.name ?? existing.name,
       body.folder_id !== undefined ? sanitizeNullable(body.folder_id) : existing.folder_id,
+      nextTeamId,
       now(),
       id,
     );
@@ -542,10 +1160,17 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'DELETE' && /^\/api\/files\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const id = decodeURIComponent(url.pathname.replace('/api/files/', ''));
-    const file = db.prepare('SELECT * FROM files WHERE id = ?').get(id);
+    const file = getFileById(id);
     if (!file) {
       json(res, 404, { error: 'File not found.' });
+      return;
+    }
+    if (!canDeleteFile(currentUser.id, file)) {
+      json(res, 403, { error: 'You do not have permission to delete this file.' });
       return;
     }
 
@@ -559,28 +1184,105 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/share-links') {
-    json(res, 200, listShareLinks(sanitizeNullable(url.searchParams.get('documentId'))));
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const documentId = sanitizeNullable(url.searchParams.get('documentId'));
+    const fileId = sanitizeNullable(url.searchParams.get('fileId'));
+    let rows = listShareLinks(documentId);
+
+    if (fileId) {
+      rows = db.prepare('SELECT * FROM share_links WHERE file_id = ? ORDER BY created_at DESC').all(fileId);
+    }
+
+    const filtered = rows.filter((row) => {
+      if (row.document_id) {
+        const document = getDocumentById(row.document_id);
+        return Boolean(document && document.user_id === currentUser.id);
+      }
+      if (row.file_id) {
+        const file = getFileById(row.file_id);
+        return Boolean(file && file.user_id === currentUser.id);
+      }
+      return false;
+    });
+
+    json(res, 200, filtered);
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/share-links') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const body = await readJsonBody(req);
     const timestamp = now();
     const id = newId();
     const shareToken = newId().replace(/-/g, '');
+    const documentId = sanitizeNullable(body.document_id);
+    const fileId = sanitizeNullable(body.file_id);
+    const visibility = body.visibility || 'private';
+    const requestedTeamId = sanitizeNullable(body.team_id);
+
+    if (!documentId && !fileId) {
+      json(res, 400, { error: 'document_id or file_id is required.' });
+      return;
+    }
+
+    if (documentId && fileId) {
+      json(res, 400, { error: 'Only one resource can be shared at a time.' });
+      return;
+    }
+
+    if (!['private', 'team', 'public'].includes(visibility)) {
+      json(res, 400, { error: 'Share visibility is invalid.' });
+      return;
+    }
+
+    const resourceType = documentId ? 'document' : 'file';
+    const resource = documentId ? getDocumentById(documentId) : getFileById(fileId);
+    if (!resource) {
+      json(res, 404, { error: 'Shared resource not found.' });
+      return;
+    }
+
+    if (resource.user_id !== currentUser.id) {
+      json(res, 403, { error: 'Only the resource owner can create share links.' });
+      return;
+    }
+
+    let teamId = requestedTeamId || sanitizeNullable(resource.team_id);
+
+    if (visibility === 'team') {
+      if (!teamId) {
+        json(res, 400, { error: 'A team must be selected for team sharing.' });
+        return;
+      }
+
+      if (!isTeamOwner(currentUser.id, teamId)) {
+        json(res, 403, { error: 'Only the team owner can share resources to this team.' });
+        return;
+      }
+
+      if (sanitizeNullable(resource.team_id) !== teamId) {
+        const tableName = resourceType === 'document' ? 'documents' : 'files';
+        db.prepare(`UPDATE ${tableName} SET team_id = ?, updated_at = ? WHERE id = ?`).run(teamId, timestamp, resource.id);
+      }
+    }
 
     db.prepare(`
-      INSERT INTO share_links (id, document_id, file_id, share_token, visibility, expires_at, created_at, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO share_links (id, document_id, file_id, team_id, share_token, visibility, expires_at, created_at, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
-      sanitizeNullable(body.document_id),
-      sanitizeNullable(body.file_id),
+      documentId,
+      fileId,
+      teamId,
       shareToken,
-      body.visibility || 'private',
+      visibility,
       sanitizeNullable(body.expires_at),
       timestamp,
-      sanitizeNullable(body.user_id) || 'demo-user-1',
+      currentUser.id,
     );
 
     json(res, 201, db.prepare('SELECT * FROM share_links WHERE id = ?').get(id));
@@ -589,17 +1291,65 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && /^\/api\/share-links\/token\/[^/]+$/.test(url.pathname)) {
     const token = decodeURIComponent(url.pathname.replace('/api/share-links/token/', ''));
-    const link = db.prepare('SELECT * FROM share_links WHERE share_token = ?').get(token);
+    const link = getShareLinkByToken(token);
     if (!link) {
       json(res, 404, { error: 'Share link not found.' });
       return;
     }
+
+    const payload = resolveSharePayload(link);
+    const access = canAccessShareLink(getCurrentUserId(req), link, payload);
+    if (!access.allowed) {
+      json(res, access.status, { error: access.message });
+      return;
+    }
+
     json(res, 200, link);
     return;
   }
 
+  if (req.method === 'GET' && /^\/api\/share-links\/token\/[^/]+\/content$/.test(url.pathname)) {
+    const token = decodeURIComponent(url.pathname.replace('/api/share-links/token/', '').replace('/content', ''));
+    const link = getShareLinkByToken(token);
+    if (!link) {
+      json(res, 404, { error: 'Share link not found.' });
+      return;
+    }
+
+    const payload = resolveSharePayload(link);
+    const access = canAccessShareLink(getCurrentUserId(req), link, payload);
+    if (!access.allowed) {
+      json(res, access.status, { error: access.message });
+      return;
+    }
+
+    json(res, 200, {
+      link,
+      document: payload?.type === 'document' ? payload.resource : null,
+      file: payload?.type === 'file' ? payload.resource : null,
+      team: link.team_id ? getTeamById(link.team_id) : null,
+    });
+    return;
+  }
+
   if (req.method === 'DELETE' && /^\/api\/share-links\/[^/]+$/.test(url.pathname)) {
-    db.prepare('DELETE FROM share_links WHERE id = ?').run(decodeURIComponent(url.pathname.replace('/api/share-links/', '')));
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const id = decodeURIComponent(url.pathname.replace('/api/share-links/', ''));
+    const existing = db.prepare('SELECT * FROM share_links WHERE id = ?').get(id);
+    if (!existing) {
+      json(res, 404, { error: 'Share link not found.' });
+      return;
+    }
+
+    const payload = resolveSharePayload(existing);
+    if (!payload?.resource || payload.resource.user_id !== currentUser.id) {
+      json(res, 403, { error: 'Only the resource owner can delete share links.' });
+      return;
+    }
+
+    db.prepare('DELETE FROM share_links WHERE id = ?').run(id);
     sendEmpty(res);
     return;
   }

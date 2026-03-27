@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
-  Copy,
   Download,
   Eye,
   File,
@@ -21,15 +20,18 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import { fileService, folderService, shareService, storageService } from '../lib';
+import { fileService, folderService, storageService } from '../lib';
 import type { FileRecord, Folder } from '../lib';
+import ResourceShareModal from './ResourceShareModal';
 
 type FileType = FileRecord['type'];
-type ShareVisibility = 'private' | 'team' | 'public';
 
 interface FileManagerProps {
   onFileSelect?: (file: FileItem) => void;
   initialFolderId?: string;
+  teamId?: string | null;
+  initialPreviewFileId?: string | null;
+  onInitialPreviewHandled?: () => void;
 }
 
 interface FolderItem {
@@ -48,6 +50,7 @@ interface FileItem {
   thumbnail?: string;
   uploadedAt: Date;
   folderId?: string;
+  teamId?: string | null;
 }
 
 const mapFolder = (folder: Folder): FolderItem => ({
@@ -66,6 +69,7 @@ const mapFile = (file: FileRecord): FileItem => ({
   thumbnail: file.thumbnail_url || undefined,
   uploadedAt: new Date(file.created_at),
   folderId: file.folder_id || undefined,
+  teamId: file.team_id || null,
 });
 
 const formatFileSize = (bytes: number) => {
@@ -132,7 +136,13 @@ function buildPathLabel(folderId: string | undefined, folderMap: Map<string, Fol
   return ['全部文件', ...names].join(' / ');
 }
 
-export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId }: FileManagerProps) {
+export default function FileManagerGalleryFixed({
+  onFileSelect,
+  initialFolderId,
+  teamId = null,
+  initialPreviewFileId = null,
+  onInitialPreviewHandled,
+}: FileManagerProps) {
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
   const [allFiles, setAllFiles] = useState<FileItem[]>([]);
@@ -146,13 +156,11 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [shareFile, setShareFile] = useState<FileItem | null>(null);
-  const [shareVisibility, setShareVisibility] = useState<ShareVisibility>('private');
-  const [shareLink, setShareLink] = useState('');
-  const [shareCopied, setShareCopied] = useState(false);
   const [movingFiles, setMovingFiles] = useState<FileItem[]>([]);
   const [targetFolderId, setTargetFolderId] = useState('');
   const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [pinnedFolderIds, setPinnedFolderIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const folderMap = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
@@ -160,17 +168,41 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
   const currentFolder = currentFolderId ? folderMap.get(currentFolderId) || null : null;
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
+  const scopedAllFiles = useMemo(
+    () => (teamId ? allFiles.filter((file) => file.teamId === teamId) : allFiles),
+    [allFiles, teamId],
+  );
+
+  const visibleFolderIds = useMemo(() => {
+    const next = new Set(pinnedFolderIds);
+
+    scopedAllFiles.forEach((file) => {
+      let current = file.folderId ? folderMap.get(file.folderId) : undefined;
+      while (current) {
+        next.add(current.id);
+        current = current.parentId ? folderMap.get(current.parentId) : undefined;
+      }
+    });
+
+    if (currentFolderId) {
+      next.add(currentFolderId);
+    }
+
+    return next;
+  }, [scopedAllFiles, folderMap, pinnedFolderIds, currentFolderId]);
+
   const folderOptions = useMemo(
     () =>
       folders
+        .filter((folder) => !teamId || visibleFolderIds.has(folder.id))
         .map((folder) => ({ id: folder.id, path: buildPathLabel(folder.id, folderMap) }))
         .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN')),
-    [folders, folderMap],
+    [folders, folderMap, teamId, visibleFolderIds],
   );
 
   const selectedMediaFiles = useMemo(
-    () => allFiles.filter((file) => selectedMediaIds.includes(file.id) && isMediaFile(file)),
-    [allFiles, selectedMediaIds],
+    () => scopedAllFiles.filter((file) => selectedMediaIds.includes(file.id) && isMediaFile(file)),
+    [scopedAllFiles, selectedMediaIds],
   );
 
   const loadFolders = async () => {
@@ -179,6 +211,10 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
   };
 
   const loadCurrentFiles = async (folderId: string | null = currentFolderId) => {
+    if (teamId) {
+      setCurrentFiles([]);
+      return;
+    }
     const data = await fileService.getByFolder(folderId);
     setCurrentFiles(data.map(mapFile));
   };
@@ -194,15 +230,30 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
 
   useEffect(() => {
     setCurrentFolderId(initialFolderId ?? null);
-  }, [initialFolderId]);
+    setPinnedFolderIds(new Set());
+  }, [initialFolderId, teamId]);
 
   useEffect(() => {
     void Promise.all([loadFolders(), loadAllFiles()]);
   }, []);
 
   useEffect(() => {
-    void loadCurrentFiles(currentFolderId);
-  }, [currentFolderId]);
+    if (!teamId) {
+      void loadCurrentFiles(currentFolderId);
+    }
+  }, [currentFolderId, teamId]);
+
+  useEffect(() => {
+    if (!initialPreviewFileId) return;
+
+    const target = scopedAllFiles.find((file) => file.id === initialPreviewFileId);
+    if (!target) return;
+
+    setCurrentFolderId(target.folderId || null);
+    setSelectedFile(target);
+    onFileSelect?.(target);
+    onInitialPreviewHandled?.();
+  }, [initialPreviewFileId, scopedAllFiles, onFileSelect, onInitialPreviewHandled]);
   useEffect(() => {
     const allIds = new Set(allFiles.map((file) => file.id));
     setSelectedMediaIds((prev) => {
@@ -222,22 +273,28 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
       folders.filter((folder) => {
         const sameParent = (folder.parentId || null) === currentFolderId;
         if (!sameParent) return false;
+        if (teamId && !visibleFolderIds.has(folder.id)) return false;
         if (!normalizedQuery) return true;
 
         const pathLabel = buildPathLabel(folder.id, folderMap).toLowerCase();
         return folder.name.toLowerCase().includes(normalizedQuery) || pathLabel.includes(normalizedQuery);
       }),
-    [folders, currentFolderId, normalizedQuery, folderMap],
+    [folders, currentFolderId, normalizedQuery, folderMap, teamId, visibleFolderIds],
   );
+
+  const scopedCurrentFiles = useMemo(() => {
+    if (!teamId) return currentFiles;
+    return scopedAllFiles.filter((file) => (file.folderId || null) === currentFolderId);
+  }, [teamId, currentFiles, scopedAllFiles, currentFolderId]);
 
   const filteredCurrentFiles = useMemo(
     () =>
-      currentFiles.filter((file) => {
+      scopedCurrentFiles.filter((file) => {
         if (!normalizedQuery) return true;
         const pathLabel = buildPathLabel(file.folderId, folderMap).toLowerCase();
         return file.name.toLowerCase().includes(normalizedQuery) || pathLabel.includes(normalizedQuery);
       }),
-    [currentFiles, normalizedQuery, folderMap],
+    [scopedCurrentFiles, normalizedQuery, folderMap],
   );
 
   const groupedCurrentFiles = useMemo(
@@ -255,17 +312,17 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
       return { images: [] as FileItem[], videos: [] as FileItem[] };
     }
 
-    const filtered = allFiles.filter((file) => {
-      if (!normalizedQuery) return true;
-      const pathLabel = buildPathLabel(file.folderId, folderMap).toLowerCase();
-      return file.name.toLowerCase().includes(normalizedQuery) || pathLabel.includes(normalizedQuery);
-    });
+      const filtered = scopedAllFiles.filter((file) => {
+        if (!normalizedQuery) return true;
+        const pathLabel = buildPathLabel(file.folderId, folderMap).toLowerCase();
+        return file.name.toLowerCase().includes(normalizedQuery) || pathLabel.includes(normalizedQuery);
+      });
 
     return {
       images: filtered.filter((file) => file.type === 'image'),
       videos: filtered.filter((file) => file.type === 'video'),
     };
-  }, [allFiles, currentFolderId, normalizedQuery, folderMap]);
+  }, [scopedAllFiles, currentFolderId, normalizedQuery, folderMap]);
 
   const hasHomepageMedia = homepagePreview.images.length > 0 || homepagePreview.videos.length > 0;
 
@@ -338,11 +395,16 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
           url: upload.url,
           storage_path: upload.path,
           folder_id: uploadTargetFolderId,
+          team_id: teamId,
         });
 
         if (!created) {
           errors.push(`${file.name}: 文件索引保存失败`);
         }
+      }
+
+      if (uploadTargetFolderId) {
+        setPinnedFolderIds((prev) => new Set(prev).add(uploadTargetFolderId));
       }
 
       await refreshFiles();
@@ -374,6 +436,9 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
 
     setNewFolderName('');
     setShowNewFolderModal(false);
+    if (teamId) {
+      setPinnedFolderIds((prev) => new Set(prev).add(created.id));
+    }
     await loadFolders();
   };
 
@@ -420,26 +485,6 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
     setSelectionMode(false);
 
     await refreshFiles();
-  };
-
-  const handleCreateShareLink = async () => {
-    if (!shareFile) return;
-
-    const created = await shareService.createShareLink(undefined, shareFile.id, shareVisibility);
-    if (!created) {
-      alert('生成分享链接失败');
-      return;
-    }
-
-    const url = `${window.location.origin}/share/${created.share_token}`;
-    setShareLink(url);
-
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareCopied(true);
-    } catch {
-      setShareCopied(false);
-    }
   };
 
   const openMoveModal = (files: FileItem[] | FileItem) => {
@@ -682,11 +727,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
           onLongPressSelect={handleLongPressSelect}
           onToggleSelect={toggleMediaSelection}
           onOpen={openPreview}
-          onShare={(file) => {
-            setShareFile(file);
-            setShareLink('');
-            setShareCopied(false);
-          }}
+          onShare={setShareFile}
           onDelete={handleDeleteFile}
           onMove={openMoveModal}
         />
@@ -701,11 +742,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
           onLongPressSelect={handleLongPressSelect}
           onToggleSelect={toggleMediaSelection}
           onOpen={openPreview}
-          onShare={(file) => {
-            setShareFile(file);
-            setShareLink('');
-            setShareCopied(false);
-          }}
+          onShare={setShareFile}
           onDelete={handleDeleteFile}
           onMove={openMoveModal}
         />
@@ -717,11 +754,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
           getPath={renderPath}
           onOpen={openPreview}
           onDownload={(file) => storageService.downloadFile(file.url, file.name)}
-          onShare={(file) => {
-            setShareFile(file);
-            setShareLink('');
-            setShareCopied(false);
-          }}
+          onShare={setShareFile}
           onDelete={handleDeleteFile}
         />
 
@@ -732,11 +765,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
           getPath={renderPath}
           onOpen={openPreview}
           onDownload={(file) => storageService.downloadFile(file.url, file.name)}
-          onShare={(file) => {
-            setShareFile(file);
-            setShareLink('');
-            setShareCopied(false);
-          }}
+          onShare={setShareFile}
           onDelete={handleDeleteFile}
         />
 
@@ -759,11 +788,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
               onLongPressSelect={handleLongPressSelect}
               onToggleSelect={toggleMediaSelection}
               onOpen={openPreview}
-              onShare={(file) => {
-                setShareFile(file);
-                setShareLink('');
-                setShareCopied(false);
-              }}
+              onShare={setShareFile}
               onDelete={handleDeleteFile}
               onMove={openMoveModal}
             />
@@ -778,11 +803,7 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
               onLongPressSelect={handleLongPressSelect}
               onToggleSelect={toggleMediaSelection}
               onOpen={openPreview}
-              onShare={(file) => {
-                setShareFile(file);
-                setShareLink('');
-                setShareCopied(false);
-              }}
+              onShare={setShareFile}
               onDelete={handleDeleteFile}
               onMove={openMoveModal}
             />
@@ -904,84 +925,14 @@ export default function FileManagerGalleryFixed({ onFileSelect, initialFolderId 
       )}
 
       {shareFile && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={() => setShareFile(null)}
-        >
-          <div
-            className="w-full max-w-lg rounded-3xl bg-white shadow-2xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-              <div>
-                <div className="text-lg font-semibold text-slate-900">分享文件</div>
-                <div className="mt-1 text-sm text-slate-500">{shareFile.name}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShareFile(null)}
-                className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="space-y-6 px-6 py-6">
-              <div className="grid grid-cols-3 gap-3">
-                {(['private', 'team', 'public'] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setShareVisibility(value)}
-                    className={`rounded-2xl border px-4 py-3 text-sm font-medium ${
-                      shareVisibility === value
-                        ? 'border-blue-500 bg-blue-50 text-blue-700'
-                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    {value === 'private' ? '私密' : value === 'team' ? '团队' : '公开'}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => void handleCreateShareLink()}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700"
-              >
-                <Share2 className="h-4 w-4" />
-                生成分享链接
-              </button>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="mb-2 text-sm font-medium text-slate-700">分享链接</div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    value={shareLink}
-                    placeholder="先生成链接"
-                    className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!shareLink) return;
-                      try {
-                        await navigator.clipboard.writeText(shareLink);
-                        setShareCopied(true);
-                      } catch {
-                        setShareCopied(false);
-                      }
-                    }}
-                    disabled={!shareLink}
-                    className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-white disabled:opacity-50"
-                  >
-                    <Copy className="h-4 w-4" />
-                    {shareCopied ? '已复制' : '复制'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ResourceShareModal
+          isOpen
+          onClose={() => setShareFile(null)}
+          resourceType="file"
+          resourceId={shareFile.id}
+          resourceName={shareFile.name}
+          initialTeamId={shareFile.teamId ?? null}
+        />
       )}
 
       {movingFiles.length > 0 && (

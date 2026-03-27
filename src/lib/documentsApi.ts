@@ -7,6 +7,8 @@ export interface DocTreeItem {
   icon: 'file' | 'folder' | 'star' | null;
   children: DocTreeItem[];
   parent_id: string | null;
+  team_id?: string | null;
+  user_id?: string | null;
   is_starred: boolean;
   is_deleted: boolean;
   updated_at: string;
@@ -23,6 +25,8 @@ function buildTree(documents: Document[], parentId: string | null): DocTreeItem[
       icon: doc.icon || 'file',
       children: buildTree(documents, doc.id),
       parent_id: doc.parent_id,
+      team_id: doc.team_id ?? null,
+      user_id: doc.user_id ?? null,
       is_starred: doc.is_starred,
       is_deleted: doc.is_deleted,
       updated_at: doc.updated_at,

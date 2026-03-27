@@ -9,6 +9,40 @@ export interface User {
   updated_at: string;
 }
 
+export interface Team {
+  id: string;
+  name: string;
+  owner_user_id: string;
+  created_at: string;
+  updated_at: string;
+  membership_status?: 'pending' | 'approved' | 'rejected' | null;
+  is_owner?: boolean;
+}
+
+export interface TeamMember {
+  id: string;
+  team_id: string;
+  user_id: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  updated_at: string;
+  user?: User;
+}
+
+export interface ResourcePermission {
+  id: string;
+  team_id: string;
+  resource_type: 'document' | 'file';
+  resource_id: string;
+  member_user_id: string;
+  can_view: boolean;
+  can_edit: boolean;
+  can_delete: boolean;
+  created_at: string;
+  updated_at: string;
+  user?: User;
+}
+
 export interface Document {
   id: string;
   title: string;
@@ -18,6 +52,7 @@ export interface Document {
   created_at: string;
   updated_at: string;
   user_id: string | null;
+  team_id?: string | null;
   is_starred: boolean;
   order_index: number;
   is_deleted: boolean;
@@ -35,6 +70,7 @@ export interface FileRecord {
   created_at: string;
   updated_at: string;
   user_id: string | null;
+  team_id?: string | null;
 }
 
 export interface Folder {
@@ -52,11 +88,27 @@ export interface ShareLink {
   id: string;
   document_id: string | null;
   file_id: string | null;
+  team_id?: string | null;
   share_token: string;
   visibility: 'private' | 'team' | 'public';
   expires_at: string | null;
   created_at: string;
   user_id: string | null;
+}
+
+export interface SharedResourcePayload {
+  link: ShareLink;
+  document?: Document | null;
+  file?: FileRecord | null;
+  team?: Team | null;
+}
+
+export interface PublicDocumentSummary extends Document {
+  share_token: string;
+}
+
+export interface PublicFileSummary extends FileRecord {
+  share_token: string;
 }
 
 export interface Comment {

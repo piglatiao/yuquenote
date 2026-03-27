@@ -3,7 +3,26 @@ export { supabase, STORAGE_CONFIG, getFileTypeFromMime, getFileTypeFromExtension
 export type { FileType } from './supabase';
 
 // Database types
-export type { Document, FileRecord, Folder, ShareLink, Comment, Todo, User, ApiResponse, UploadProgress, AuthState, LoginCredentials, RegisterData } from './types';
+export type {
+  Document,
+  FileRecord,
+  Folder,
+  ShareLink,
+  Comment,
+  Todo,
+  User,
+  Team,
+  TeamMember,
+  ResourcePermission,
+  SharedResourcePayload,
+  PublicDocumentSummary,
+  PublicFileSummary,
+  ApiResponse,
+  UploadProgress,
+  AuthState,
+  LoginCredentials,
+  RegisterData,
+} from './types';
 
 // Auth services
 export { authService } from './authApi';
@@ -16,7 +35,7 @@ export type { DocTreeItem } from './documentsApi';
 export { commentService, todoService } from './servicesApi';
 
 // Database services
-export { folderService, fileService, shareService } from './databaseApi';
+export { folderService, fileService, shareService, teamService, resourcePermissionService, publicResourceService } from './databaseApi';
 
 // Storage services
 export { storageService } from './storageApi';

@@ -4,7 +4,8 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 import './index.css'
 import App from './App.tsx'
-import SharePagePersistent from './pages/SharePagePersistent.tsx'
+import PublicLibraryStandalone from './pages/PublicLibraryStandalone.tsx'
+import SharePageAccess from './pages/SharePageAccess.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -12,7 +13,8 @@ createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<App />} />
-          <Route path="/share/:token" element={<SharePagePersistent />} />
+          <Route path="/public" element={<PublicLibraryStandalone />} />
+          <Route path="/share/:token" element={<SharePageAccess />} />
         </Routes>
       </BrowserRouter>
     </ErrorBoundary>

@@ -1,17 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import Sidebar from './components/Sidebar';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import Sidebar from './components/SidebarPanel';
 import Header from './components/Header';
 import RichTextEditor from './components/RichTextEditor';
 import FileManager from './components/FileManagerGallery';
 import Login from './components/Login';
 import CommentSection from './components/CommentSection';
 import TodoList from './components/TodoList';
-import ShareModal from './components/ShareModal';
 import NameInputModal from './components/NameInputModal';
+import PublicLibrary from './components/PublicLibraryManagerPanel';
+import ResourceShareModal from './components/ResourceShareModal';
+import TeamWorkspace from './components/TeamWorkspacePanel';
 import { authService } from './lib/authApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
-import type { User, Document } from './lib/types';
+import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary } from './lib/types';
 import './App.css';
 
 const DEFAULT_NOTES_FOLDER_NAME = '默认笔记文件夹';
@@ -25,6 +27,33 @@ interface NameDialogState {
   fallbackValue: string;
   parentId: string | null;
   docId?: string;
+}
+
+function filterDocTreeByTeam(items: DocTreeItem[], teamId: string): DocTreeItem[] {
+  return items.reduce<DocTreeItem[]>((acc, item) => {
+    const children = filterDocTreeByTeam(item.children, teamId);
+    if (item.team_id === teamId || children.length > 0) {
+      acc.push({
+        ...item,
+        children,
+      });
+    }
+    return acc;
+  }, []);
+}
+
+function collectTreeIds(items: DocTreeItem[]): Set<string> {
+  const ids = new Set<string>();
+  const walk = (nodes: DocTreeItem[]) => {
+    nodes.forEach((node) => {
+      ids.add(node.id);
+      if (node.children.length > 0) {
+        walk(node.children);
+      }
+    });
+  };
+  walk(items);
+  return ids;
 }
 
 function App() {
@@ -47,6 +76,8 @@ function App() {
   const [showComments, setShowComments] = useState(false);
   const [showTodos, setShowTodos] = useState(false);
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
+  const [activeWorkspaceTeam, setActiveWorkspaceTeam] = useState<Team | null>(null);
+  const [pendingPreviewFileId, setPendingPreviewFileId] = useState<string | null>(null);
   const selectedDocIdRef = useRef<string | null>(null);
   const editVersionRef = useRef(0);
   const isSavingRef = useRef(false);
@@ -55,6 +86,13 @@ function App() {
   useEffect(() => {
     selectedDocIdRef.current = selectedDoc?.id ?? null;
   }, [selectedDoc?.id]);
+
+  const visibleDocTree = useMemo(() => {
+    if (!activeWorkspaceTeam) return docTree;
+    return filterDocTreeByTeam(docTree, activeWorkspaceTeam.id);
+  }, [docTree, activeWorkspaceTeam]);
+
+  const visibleDocIds = useMemo(() => collectTreeIds(visibleDocTree), [visibleDocTree]);
 
   // Initialize app
   useEffect(() => {
@@ -107,10 +145,12 @@ function App() {
     setUser(null);
     setDocTree([]);
     setSelectedDoc(null);
+    setActiveWorkspaceTeam(null);
+    setPendingPreviewFileId(null);
   };
 
-  const handleDocSelect = useCallback(async (doc: DocTreeItem) => {
-    const fullDoc = await documentService.getById(doc.id);
+  const openDocumentById = useCallback(async (docId: string) => {
+    const fullDoc = await documentService.getById(docId);
     if (fullDoc) {
       setSelectedDoc(fullDoc);
       setDocTitle(fullDoc.title);
@@ -125,12 +165,26 @@ function App() {
     }
   }, []);
 
+  const handleDocSelect = useCallback(async (doc: DocTreeItem) => {
+    await openDocumentById(doc.id);
+  }, [openDocumentById]);
+
   const handleFilesSelect = useCallback(() => {
     setShowFileManager(true);
     setSelectedDoc(null);
     setShowComments(false);
     setShowTodos(false);
   }, []);
+
+  useEffect(() => {
+    if (selectedDoc && !visibleDocIds.has(selectedDoc.id)) {
+      setSelectedDoc(null);
+      setDocTitle('');
+      setContent('');
+      setShowComments(false);
+      setShowTodos(false);
+    }
+  }, [selectedDoc, visibleDocIds]);
 
   const handleContentChange = useCallback((newContent: string) => {
     if (newContent === content) return;
@@ -196,12 +250,37 @@ function App() {
 
   const handleTabChange = useCallback((tab: string) => {
     setActiveTab(tab);
+    setShowShareModal(false);
     if (tab === 'files') {
       setShowFileManager(true);
       setSelectedDoc(null);
+      setShowComments(false);
+      setShowTodos(false);
+    } else if (tab === 'teams' || tab === 'public') {
+      setShowFileManager(false);
+      setSelectedDoc(null);
+      setShowComments(false);
+      setShowTodos(false);
     } else {
       setShowFileManager(false);
     }
+  }, []);
+
+  const handleEnterTeamSpace = useCallback((team: Team) => {
+    setActiveWorkspaceTeam(team);
+    setPendingPreviewFileId(null);
+    setShowFileManager(false);
+    setSelectedDoc(null);
+    setDocTitle('');
+    setContent('');
+    setShowComments(false);
+    setShowTodos(false);
+    setActiveTab('docs');
+  }, []);
+
+  const handleLeaveTeamSpace = useCallback(() => {
+    setActiveWorkspaceTeam(null);
+    setPendingPreviewFileId(null);
   }, []);
 
   const findFolderByTitle = (items: DocTreeItem[], title: string): DocTreeItem | null => {
@@ -280,7 +359,7 @@ function App() {
 
   const handleCreateDoc = async (parentId: string | null = null) => {
     const latestTree = await documentService.getTree();
-    const suggestedParentId = parentId ?? findDefaultNotesFolderId(latestTree);
+    const suggestedParentId = activeWorkspaceTeam ? parentId : parentId ?? findDefaultNotesFolderId(latestTree);
     const suggestedName = suggestedParentId
       ? getAutoName(latestTree, suggestedParentId, 'file', '新建笔记')
       : '新建笔记';
@@ -325,6 +404,7 @@ function App() {
         content: '<p></p>',
         parent_id: dialog.parentId,
         icon: 'folder',
+        team_id: activeWorkspaceTeam?.id ?? null,
       });
       if (newFolder) {
         await loadDocuments();
@@ -338,14 +418,17 @@ function App() {
       return;
     }
 
-    const targetParentId = dialog.parentId ?? (await ensureDefaultNotesFolderId());
-    if (!targetParentId) return;
+    const targetParentId = activeWorkspaceTeam
+      ? dialog.parentId
+      : dialog.parentId ?? (await ensureDefaultNotesFolderId());
+    if (!activeWorkspaceTeam && !targetParentId) return;
 
     const newDoc = await documentService.create({
       title: finalName,
       content: '<p></p>',
       parent_id: targetParentId,
       icon: 'file',
+      team_id: activeWorkspaceTeam?.id ?? null,
     });
     if (newDoc) {
       await loadDocuments();
@@ -423,6 +506,38 @@ function App() {
     }
   };
 
+  const handleEditPublicDocument = useCallback(async (document: PublicDocumentSummary) => {
+    setActiveWorkspaceTeam(null);
+    setPendingPreviewFileId(null);
+    setActiveTab('docs');
+    setShowFileManager(false);
+    await openDocumentById(document.id);
+  }, [openDocumentById]);
+
+  const handleOpenPublicFile = useCallback((file: PublicFileSummary) => {
+    setActiveWorkspaceTeam(null);
+    setSelectedDoc(null);
+    setShowComments(false);
+    setShowTodos(false);
+    setPendingPreviewFileId(file.id);
+    setActiveTab('files');
+    setShowFileManager(true);
+  }, []);
+
+  const headerTitle = showFileManager
+    ? activeWorkspaceTeam
+      ? `${activeWorkspaceTeam.name} · 团队文件`
+      : '文件管理'
+    : activeTab === 'teams'
+      ? '团队空间'
+      : activeTab === 'public'
+        ? '公开资源'
+        : selectedDoc
+          ? docTitle
+          : activeWorkspaceTeam
+            ? `${activeWorkspaceTeam.name} · 团队空间`
+            : docTitle;
+
   // Loading state
   if (isLoading) {
     return (
@@ -449,7 +564,7 @@ function App() {
         selectedDocId={selectedDoc?.id || ''}
         activeTab={activeTab}
         onTabChange={handleTabChange}
-        docTree={docTree}
+        docTree={visibleDocTree}
         onCreateDoc={handleCreateDoc}
         onCreateFolder={handleCreateFolder}
         onRequestRenameDoc={handleRequestRenameDoc}
@@ -465,23 +580,65 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <Header
-          title={showFileManager ? '鏂囦欢绠＄悊' : docTitle}
+          title={showFileManager ? '文件管理' : activeTab === 'teams' ? '团队空间' : activeTab === 'public' ? '公开资源' : docTitle}
           onTitleChange={handleTitleChange}
           isEditing={isEditing}
           onSave={handleSave}
           lastSaved={lastSaved}
-          showShare={!!selectedDoc}
+          showShare={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
           onShare={() => setShowShareModal(true)}
-          showComments={!!selectedDoc}
+          showComments={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
           onToggleComments={() => setShowComments(!showComments)}
-          showTodos={!!selectedDoc}
+          showTodos={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
           onToggleTodos={() => setShowTodos(!showTodos)}
         />
+
+        {activeWorkspaceTeam && (
+          <div className="flex items-center justify-between gap-4 border-b border-blue-100 bg-blue-50 px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-blue-900">当前团队空间：{activeWorkspaceTeam.name}</div>
+              <div className="mt-1 text-xs text-blue-700">
+                当前文档区已切到该团队，可继续管理团队内的文档与分享。
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveTab('teams')}
+                className="rounded-xl border border-blue-200 bg-white px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
+              >
+                管理团队
+              </button>
+              <button
+                type="button"
+                onClick={handleLeaveTeamSpace}
+                className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                退出团队空间
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Content area */}
         <div className="flex-1 overflow-hidden">
           {showFileManager ? (
-            <FileManager />
+            <FileManager
+              teamId={activeWorkspaceTeam?.id ?? null}
+              initialPreviewFileId={pendingPreviewFileId}
+              onInitialPreviewHandled={() => setPendingPreviewFileId(null)}
+            />
+          ) : activeTab === 'teams' ? (
+            <TeamWorkspace
+              activeWorkspaceTeamId={activeWorkspaceTeam?.id ?? null}
+              onEnterTeamSpace={handleEnterTeamSpace}
+            />
+          ) : activeTab === 'public' ? (
+            <PublicLibrary
+              currentUserId={user.id}
+              onEditDocument={handleEditPublicDocument}
+              onOpenFile={handleOpenPublicFile}
+            />
           ) : selectedDoc ? (
             <div className="h-full flex">
               {/* Editor */}
@@ -559,11 +716,13 @@ function App() {
       />
 
       {selectedDoc && (
-        <ShareModal
+        <ResourceShareModal
           isOpen={showShareModal}
           onClose={() => setShowShareModal(false)}
-          documentId={selectedDoc.id}
-          documentTitle={selectedDoc.title}
+          resourceType="document"
+          resourceId={selectedDoc.id}
+          resourceName={selectedDoc.title}
+          initialTeamId={selectedDoc.team_id ?? null}
         />
       )}
     </div>
