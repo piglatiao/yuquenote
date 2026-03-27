@@ -348,9 +348,9 @@ async function handleApi(req, res, url) {
     const membershipId = newId();
 
     db.prepare(`
-      INSERT INTO teams (id, name, owner_user_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(teamId, name, currentUser.id, timestamp, timestamp);
+      INSERT INTO teams (id, name, owner_user_id, avatar_url, member_limit, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(teamId, name, currentUser.id, null, 10, timestamp, timestamp);
 
     db.prepare(`
       INSERT INTO team_members (id, team_id, user_id, status, created_at, updated_at)
@@ -362,6 +362,59 @@ async function handleApi(req, res, url) {
       membership_status: 'approved',
       is_owner: true,
     });
+    return;
+  }
+
+  if (req.method === 'PATCH' && /^\/api\/teams\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const existingTeam = getTeamById(teamId);
+    if (!existingTeam) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const nextName = body.name !== undefined ? String(body.name || '').trim() : existingTeam.name;
+    const nextAvatarUrl = body.avatar_url !== undefined ? sanitizeNullable(body.avatar_url) : existingTeam.avatar_url;
+    const nextCreatedAt = body.created_at !== undefined ? String(body.created_at || '').trim() : existingTeam.created_at;
+    const nextMemberLimit = body.member_limit !== undefined ? Number(body.member_limit) : Number(existingTeam.member_limit ?? 10);
+
+    if (!nextName) {
+      json(res, 400, { error: 'Team name is required.' });
+      return;
+    }
+
+    if (!nextCreatedAt || Number.isNaN(new Date(nextCreatedAt).getTime())) {
+      json(res, 400, { error: 'created_at must be a valid datetime.' });
+      return;
+    }
+
+    if (!Number.isInteger(nextMemberLimit) || nextMemberLimit < 1) {
+      json(res, 400, { error: 'member_limit must be a positive integer.' });
+      return;
+    }
+
+    const approvedCountRow = db
+      .prepare("SELECT COUNT(*) AS count FROM team_members WHERE team_id = ? AND status = 'approved'")
+      .get(teamId);
+    const approvedCount = Number(approvedCountRow?.count ?? 0);
+    if (nextMemberLimit < approvedCount) {
+      json(res, 400, { error: 'member_limit cannot be lower than the current approved member count.' });
+      return;
+    }
+
+    db.prepare(`
+      UPDATE teams
+      SET name = ?, avatar_url = ?, member_limit = ?, created_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(nextName, nextAvatarUrl, nextMemberLimit, nextCreatedAt, now(), teamId);
+
+    json(res, 200, getTeamById(teamId));
     return;
   }
 
@@ -467,6 +520,17 @@ async function handleApi(req, res, url) {
     const membership = db.prepare('SELECT * FROM team_members WHERE id = ? AND team_id = ?').get(requestId, teamId);
     if (!membership) {
       json(res, 404, { error: 'Join request not found.' });
+      return;
+    }
+
+    const team = getTeamById(teamId);
+    const approvedCountRow = db
+      .prepare("SELECT COUNT(*) AS count FROM team_members WHERE team_id = ? AND status = 'approved'")
+      .get(teamId);
+    const approvedCount = Number(approvedCountRow?.count ?? 0);
+    const memberLimit = Number(team?.member_limit ?? 10);
+    if (approvedCount >= memberLimit) {
+      json(res, 409, { error: 'Team member limit reached.' });
       return;
     }
 

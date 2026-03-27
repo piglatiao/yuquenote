@@ -118,6 +118,8 @@ export function teamRowToModel(row) {
     id: row.id,
     name: row.name,
     owner_user_id: row.owner_user_id,
+    avatar_url: row.avatar_url ?? null,
+    member_limit: Number(row.member_limit ?? 10),
     created_at: row.created_at,
     updated_at: row.updated_at,
     membership_status: row.membership_status ?? null,
@@ -319,6 +321,8 @@ db.exec(`
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     owner_user_id TEXT NOT NULL,
+    avatar_url TEXT,
+    member_limit INTEGER NOT NULL DEFAULT 10,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -352,6 +356,8 @@ ensureColumn('documents', 'team_id', 'TEXT');
 ensureColumn('files', 'team_id', 'TEXT');
 ensureColumn('folders', 'team_id', 'TEXT');
 ensureColumn('share_links', 'team_id', 'TEXT');
+ensureColumn('teams', 'avatar_url', 'TEXT');
+ensureColumn('teams', 'member_limit', 'INTEGER DEFAULT 10');
 
 const existingUser = db.prepare('SELECT * FROM users WHERE email = ?').get('demo@example.com');
 if (!existingUser) {

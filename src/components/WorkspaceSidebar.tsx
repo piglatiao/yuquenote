@@ -419,9 +419,17 @@ export default function WorkspaceSidebar({
                   {activeWorkspaceTeam && (
                     <div className="-mx-1 mb-5 rounded-[24px] border border-slate-200/80 bg-gradient-to-b from-slate-50 to-white p-3.5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
                       <div className="flex items-start gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-blue-400 text-white shadow-sm">
-                          <Users className="h-4.5 w-4.5" />
-                        </div>
+                        {activeWorkspaceTeam.avatar_url ? (
+                          <img
+                            src={activeWorkspaceTeam.avatar_url}
+                            alt={activeWorkspaceTeam.name}
+                            className="h-9 w-9 shrink-0 rounded-2xl object-cover shadow-sm"
+                          />
+                        ) : (
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-blue-400 text-white shadow-sm">
+                            <Users className="h-4.5 w-4.5" />
+                          </div>
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-slate-900">{activeWorkspaceTeam.name}</div>
                           <div className="mt-1 text-xs text-slate-500">
@@ -436,7 +444,7 @@ export default function WorkspaceSidebar({
                             <div className="text-[11px] text-slate-400">成员数</div>
                             <div className="mt-0.5 text-sm font-semibold text-slate-900">
                               {activeTeamMemberCount}
-                              <span className="ml-1 text-xs font-normal text-slate-400">/10</span>
+                              <span className="ml-1 text-xs font-normal text-slate-400">/{activeWorkspaceTeam.member_limit ?? 10}</span>
                             </div>
                           </div>
                           <button
@@ -518,9 +526,17 @@ export default function WorkspaceSidebar({
                         }}
                         className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-slate-50"
                       >
-                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-blue-400 text-white">
-                          <Users className="h-5 w-5" />
-                        </div>
+                        {team.avatar_url ? (
+                          <img
+                            src={team.avatar_url}
+                            alt={team.name}
+                            className="h-11 w-11 shrink-0 rounded-2xl object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-sky-500 to-blue-400 text-white">
+                            <Users className="h-5 w-5" />
+                          </div>
+                        )}
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-slate-900">{team.name}</div>
                           <div className="truncate text-sm text-slate-500">

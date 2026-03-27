@@ -13,6 +13,8 @@ export interface Team {
   id: string;
   name: string;
   owner_user_id: string;
+  avatar_url?: string | null;
+  member_limit?: number;
   created_at: string;
   updated_at: string;
   membership_status?: 'pending' | 'approved' | 'rejected' | null;

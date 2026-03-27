@@ -157,6 +157,25 @@ export const teamService = {
     }
   },
 
+  async updateTeam(
+    teamId: string,
+    updates: {
+      name?: string;
+      avatar_url?: string | null;
+      created_at?: string;
+      member_limit?: number;
+    },
+  ): Promise<Team | null> {
+    try {
+      return await apiRequest<Team>(
+        `/teams/${encodeURIComponent(teamId)}`,
+        toJsonRequest(updates, { method: 'PATCH' }),
+      );
+    } catch {
+      return null;
+    }
+  },
+
   async requestToJoin(teamId: string): Promise<boolean> {
     try {
       await apiRequest<{ ok: true }>(`/teams/${encodeURIComponent(teamId)}/join-requests`, { method: 'POST' });
