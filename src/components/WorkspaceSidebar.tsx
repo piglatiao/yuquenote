@@ -24,7 +24,7 @@ import {
   Users,
 } from 'lucide-react';
 import NameInputModal from './NameInputModal';
-import ProfileSettingsModal from './ProfileSettingsModal';
+import ProfileSettingsUploadModal from './ProfileSettingsUploadModal';
 import { authService } from '../lib/authApi';
 import { teamService } from '../lib/databaseApi';
 import type { DocTreeItem } from '../lib/documentsApi';
@@ -848,7 +848,7 @@ export default function WorkspaceSidebar({
         }}
       />
 
-      <ProfileSettingsModal
+      <ProfileSettingsUploadModal
         isOpen={showProfileModal}
         user={user}
         onClose={() => setShowProfileModal(false)}
