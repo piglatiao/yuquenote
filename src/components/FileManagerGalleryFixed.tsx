@@ -39,6 +39,7 @@ interface FolderItem {
   name: string;
   parentId?: string;
   createdAt: Date;
+  teamId?: string | null;
 }
 
 interface FileItem {
@@ -58,6 +59,7 @@ const mapFolder = (folder: Folder): FolderItem => ({
   name: folder.name,
   parentId: folder.parent_id || undefined,
   createdAt: new Date(folder.created_at),
+  teamId: folder.team_id || null,
 });
 
 const mapFile = (file: FileRecord): FileItem => ({
@@ -144,7 +146,6 @@ export default function FileManagerGalleryFixed({
   onInitialPreviewHandled,
 }: FileManagerProps) {
   const [folders, setFolders] = useState<FolderItem[]>([]);
-  const [currentFiles, setCurrentFiles] = useState<FileItem[]>([]);
   const [allFiles, setAllFiles] = useState<FileItem[]>([]);
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(initialFolderId ?? null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -160,44 +161,28 @@ export default function FileManagerGalleryFixed({
   const [targetFolderId, setTargetFolderId] = useState('');
   const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
-  const [pinnedFolderIds, setPinnedFolderIds] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const folderMap = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
+  const scopedFolders = useMemo(
+    () => folders.filter((folder) => (teamId ? folder.teamId === teamId : !folder.teamId)),
+    [folders, teamId],
+  );
+  const folderMap = useMemo(() => new Map(scopedFolders.map((folder) => [folder.id, folder])), [scopedFolders]);
   const breadcrumbs = useMemo(() => buildBreadcrumbs(currentFolderId, folderMap), [currentFolderId, folderMap]);
   const currentFolder = currentFolderId ? folderMap.get(currentFolderId) || null : null;
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const scopedAllFiles = useMemo(
-    () => (teamId ? allFiles.filter((file) => file.teamId === teamId) : allFiles),
+    () => allFiles.filter((file) => (teamId ? file.teamId === teamId : !file.teamId)),
     [allFiles, teamId],
   );
 
-  const visibleFolderIds = useMemo(() => {
-    const next = new Set(pinnedFolderIds);
-
-    scopedAllFiles.forEach((file) => {
-      let current = file.folderId ? folderMap.get(file.folderId) : undefined;
-      while (current) {
-        next.add(current.id);
-        current = current.parentId ? folderMap.get(current.parentId) : undefined;
-      }
-    });
-
-    if (currentFolderId) {
-      next.add(currentFolderId);
-    }
-
-    return next;
-  }, [scopedAllFiles, folderMap, pinnedFolderIds, currentFolderId]);
-
   const folderOptions = useMemo(
     () =>
-      folders
-        .filter((folder) => !teamId || visibleFolderIds.has(folder.id))
+      scopedFolders
         .map((folder) => ({ id: folder.id, path: buildPathLabel(folder.id, folderMap) }))
         .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN')),
-    [folders, folderMap, teamId, visibleFolderIds],
+    [scopedFolders, folderMap],
   );
 
   const selectedMediaFiles = useMemo(
@@ -210,27 +195,17 @@ export default function FileManagerGalleryFixed({
     setFolders(data.map(mapFolder));
   };
 
-  const loadCurrentFiles = async (folderId: string | null = currentFolderId) => {
-    if (teamId) {
-      setCurrentFiles([]);
-      return;
-    }
-    const data = await fileService.getByFolder(folderId);
-    setCurrentFiles(data.map(mapFile));
-  };
-
   const loadAllFiles = async () => {
     const data = await fileService.getAll();
     setAllFiles(data.map(mapFile));
   };
 
-  const refreshFiles = async (folderId: string | null = currentFolderId) => {
-    await Promise.all([loadCurrentFiles(folderId), loadAllFiles()]);
+  const refreshFiles = async () => {
+    await Promise.all([loadFolders(), loadAllFiles()]);
   };
 
   useEffect(() => {
     setCurrentFolderId(initialFolderId ?? null);
-    setPinnedFolderIds(new Set());
   }, [initialFolderId, teamId]);
 
   useEffect(() => {
@@ -238,10 +213,10 @@ export default function FileManagerGalleryFixed({
   }, []);
 
   useEffect(() => {
-    if (!teamId) {
-      void loadCurrentFiles(currentFolderId);
+    if (currentFolderId && !folderMap.has(currentFolderId)) {
+      setCurrentFolderId(null);
     }
-  }, [currentFolderId, teamId]);
+  }, [currentFolderId, folderMap]);
 
   useEffect(() => {
     if (!initialPreviewFileId) return;
@@ -255,12 +230,21 @@ export default function FileManagerGalleryFixed({
     onInitialPreviewHandled?.();
   }, [initialPreviewFileId, scopedAllFiles, onFileSelect, onInitialPreviewHandled]);
   useEffect(() => {
-    const allIds = new Set(allFiles.map((file) => file.id));
+    const allIds = new Set(scopedAllFiles.map((file) => file.id));
     setSelectedMediaIds((prev) => {
       const next = prev.filter((id) => allIds.has(id));
       return next.length === prev.length ? prev : next;
     });
-  }, [allFiles]);
+  }, [scopedAllFiles]);
+
+  useEffect(() => {
+    if (selectedFile && !scopedAllFiles.some((file) => file.id === selectedFile.id)) {
+      setSelectedFile(null);
+    }
+    if (shareFile && !scopedAllFiles.some((file) => file.id === shareFile.id)) {
+      setShareFile(null);
+    }
+  }, [scopedAllFiles, selectedFile, shareFile]);
 
   useEffect(() => {
     if (selectedMediaIds.length === 0) {
@@ -270,22 +254,21 @@ export default function FileManagerGalleryFixed({
 
   const currentFolders = useMemo(
     () =>
-      folders.filter((folder) => {
+      scopedFolders.filter((folder) => {
         const sameParent = (folder.parentId || null) === currentFolderId;
         if (!sameParent) return false;
-        if (teamId && !visibleFolderIds.has(folder.id)) return false;
         if (!normalizedQuery) return true;
 
         const pathLabel = buildPathLabel(folder.id, folderMap).toLowerCase();
         return folder.name.toLowerCase().includes(normalizedQuery) || pathLabel.includes(normalizedQuery);
       }),
-    [folders, currentFolderId, normalizedQuery, folderMap, teamId, visibleFolderIds],
+    [scopedFolders, currentFolderId, normalizedQuery, folderMap],
   );
 
-  const scopedCurrentFiles = useMemo(() => {
-    if (!teamId) return currentFiles;
-    return scopedAllFiles.filter((file) => (file.folderId || null) === currentFolderId);
-  }, [teamId, currentFiles, scopedAllFiles, currentFolderId]);
+  const scopedCurrentFiles = useMemo(
+    () => scopedAllFiles.filter((file) => (file.folderId || null) === currentFolderId),
+    [scopedAllFiles, currentFolderId],
+  );
 
   const filteredCurrentFiles = useMemo(
     () =>
@@ -334,7 +317,7 @@ export default function FileManagerGalleryFixed({
   };
 
   const openUploadModal = () => {
-    if (folders.length === 0) {
+    if (scopedFolders.length === 0) {
       alert('请先创建文件夹，再上传文件。');
       return;
     }
@@ -403,10 +386,6 @@ export default function FileManagerGalleryFixed({
         }
       }
 
-      if (uploadTargetFolderId) {
-        setPinnedFolderIds((prev) => new Set(prev).add(uploadTargetFolderId));
-      }
-
       await refreshFiles();
     } finally {
       setUploading(false);
@@ -427,6 +406,7 @@ export default function FileManagerGalleryFixed({
       name,
       parent_id: currentFolderId,
       icon: 'folder',
+      team_id: teamId,
     });
 
     if (!created) {
@@ -436,10 +416,7 @@ export default function FileManagerGalleryFixed({
 
     setNewFolderName('');
     setShowNewFolderModal(false);
-    if (teamId) {
-      setPinnedFolderIds((prev) => new Set(prev).add(created.id));
-    }
-    await loadFolders();
+    await refreshFiles();
   };
 
   const handleDeleteFile = async (file: FileItem) => {

@@ -11,6 +11,7 @@ import PublicLibrary from './components/PublicLibraryManagerPanel';
 import ResourceShareModal from './components/ResourceShareModal';
 import TeamWorkspace from './components/TeamWorkspacePanel';
 import { authService } from './lib/authApi';
+import { teamService } from './lib/databaseApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
 import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary } from './lib/types';
@@ -29,10 +30,11 @@ interface NameDialogState {
   docId?: string;
 }
 
-function filterDocTreeByTeam(items: DocTreeItem[], teamId: string): DocTreeItem[] {
+function filterDocTreeByWorkspace(items: DocTreeItem[], teamId: string | null): DocTreeItem[] {
   return items.reduce<DocTreeItem[]>((acc, item) => {
-    const children = filterDocTreeByTeam(item.children, teamId);
-    if (item.team_id === teamId || children.length > 0) {
+    const children = filterDocTreeByWorkspace(item.children, teamId);
+    const itemTeamId = item.team_id ?? null;
+    if ((teamId ? itemTeamId === teamId : !itemTeamId) || children.length > 0) {
       acc.push({
         ...item,
         children,
@@ -88,8 +90,7 @@ function App() {
   }, [selectedDoc?.id]);
 
   const visibleDocTree = useMemo(() => {
-    if (!activeWorkspaceTeam) return docTree;
-    return filterDocTreeByTeam(docTree, activeWorkspaceTeam.id);
+    return filterDocTreeByWorkspace(docTree, activeWorkspaceTeam?.id ?? null);
   }, [docTree, activeWorkspaceTeam]);
 
   const visibleDocIds = useMemo(() => collectTreeIds(visibleDocTree), [visibleDocTree]);
@@ -507,15 +508,27 @@ function App() {
   };
 
   const handleEditPublicDocument = useCallback(async (document: PublicDocumentSummary) => {
-    setActiveWorkspaceTeam(null);
+    const targetTeamId = document.team_id ?? null;
+    if (targetTeamId) {
+      const team = await teamService.getById(targetTeamId);
+      setActiveWorkspaceTeam(team);
+    } else {
+      setActiveWorkspaceTeam(null);
+    }
     setPendingPreviewFileId(null);
     setActiveTab('docs');
     setShowFileManager(false);
     await openDocumentById(document.id);
   }, [openDocumentById]);
 
-  const handleOpenPublicFile = useCallback((file: PublicFileSummary) => {
-    setActiveWorkspaceTeam(null);
+  const handleOpenPublicFile = useCallback(async (file: PublicFileSummary) => {
+    const targetTeamId = file.team_id ?? null;
+    if (targetTeamId) {
+      const team = await teamService.getById(targetTeamId);
+      setActiveWorkspaceTeam(team);
+    } else {
+      setActiveWorkspaceTeam(null);
+    }
     setSelectedDoc(null);
     setShowComments(false);
     setShowTodos(false);
@@ -580,7 +593,7 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <Header
-          title={showFileManager ? '文件管理' : activeTab === 'teams' ? '团队空间' : activeTab === 'public' ? '公开资源' : docTitle}
+          title={headerTitle}
           onTitleChange={handleTitleChange}
           isEditing={isEditing}
           onSave={handleSave}

@@ -81,6 +81,7 @@ export interface Folder {
   created_at: string;
   updated_at: string;
   user_id: string | null;
+  team_id?: string | null;
   order_index: number;
 }
 

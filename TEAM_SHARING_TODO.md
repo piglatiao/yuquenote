@@ -13,6 +13,7 @@
 - [x] `pnpm exec tsc -b`
 - [x] `node --check server/app.mjs`
 - [x] `node --check server/db.mjs`
+- [x] 团队文件夹补充 `team_id`，并按个人/团队工作区隔离文件与文件夹展示
 
 ## 待验收
 - [ ] 手工验证团队创建、申请加入、审批通过流程

@@ -350,6 +350,7 @@ db.exec(`
 
 ensureColumn('documents', 'team_id', 'TEXT');
 ensureColumn('files', 'team_id', 'TEXT');
+ensureColumn('folders', 'team_id', 'TEXT');
 ensureColumn('share_links', 'team_id', 'TEXT');
 
 const existingUser = db.prepare('SELECT * FROM users WHERE email = ?').get('demo@example.com');
@@ -463,6 +464,10 @@ export function listTodos(documentId) {
 
 export function listFolders() {
   return db.prepare('SELECT * FROM folders ORDER BY order_index, created_at').all();
+}
+
+export function getFolderById(id) {
+  return db.prepare('SELECT * FROM folders WHERE id = ?').get(id) || null;
 }
 
 export function listFiles(folderId) {

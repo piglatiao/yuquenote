@@ -12,6 +12,7 @@ import {
   deleteDocumentRecursive,
   documentRowToModel,
   getDocumentById,
+  getFolderById,
   getFileById,
   getFileType,
   getNextOrderIndex,
@@ -124,6 +125,15 @@ function canDeleteFile(userId, file) {
   const teamId = sanitizeNullable(file.team_id);
   if (!teamId || !userId || !isApprovedTeamMember(userId, teamId)) return false;
   return Boolean(getResourcePermission(teamId, 'file', file.id, userId)?.can_delete);
+}
+
+function canAccessFolder(userId, folder) {
+  if (!folder || !userId) return false;
+  const teamId = sanitizeNullable(folder.team_id);
+  if (!teamId) {
+    return folder.user_id === userId;
+  }
+  return isApprovedTeamMember(userId, teamId);
 }
 
 function ensureTeamOwner(res, userId, teamId) {
@@ -986,7 +996,8 @@ async function handleApi(req, res, url) {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
 
-    json(res, 200, db.prepare('SELECT * FROM folders WHERE user_id = ? ORDER BY order_index, created_at').all(currentUser.id));
+    const rows = db.prepare('SELECT * FROM folders ORDER BY order_index, created_at').all();
+    json(res, 200, rows.filter((folder) => canAccessFolder(currentUser.id, folder)));
     return;
   }
 
@@ -998,11 +1009,34 @@ async function handleApi(req, res, url) {
     const timestamp = now();
     const id = newId();
     const parentId = sanitizeNullable(body.parent_id);
+    const teamId = sanitizeNullable(body.team_id);
+    const parentFolder = parentId ? getFolderById(parentId) : null;
+
+    if (teamId && !isTeamOwner(currentUser.id, teamId)) {
+      json(res, 403, { error: 'Only the team owner can create folders directly in this team.' });
+      return;
+    }
+
+    if (parentId && !parentFolder) {
+      json(res, 404, { error: 'Parent folder not found.' });
+      return;
+    }
+
+    if (parentFolder && !canAccessFolder(currentUser.id, parentFolder)) {
+      json(res, 403, { error: 'You do not have permission to use this folder.' });
+      return;
+    }
+
+    if (parentFolder && sanitizeNullable(parentFolder.team_id) !== teamId) {
+      json(res, 400, { error: 'Folder team must match the parent folder team.' });
+      return;
+    }
+
     const orderIndex = body.order_index ?? getNextOrderIndex('folders', 'parent_id', parentId);
 
     db.prepare(`
-      INSERT INTO folders (id, name, parent_id, icon, created_at, updated_at, user_id, order_index)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO folders (id, name, parent_id, icon, created_at, updated_at, user_id, team_id, order_index)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       body.name || 'New Folder',
@@ -1011,6 +1045,7 @@ async function handleApi(req, res, url) {
       timestamp,
       timestamp,
       currentUser.id,
+      teamId,
       orderIndex,
     );
 
@@ -1083,10 +1118,27 @@ async function handleApi(req, res, url) {
     const id = newId();
     const fileType = body.type || getFileType(body.name || '', '');
     const fileUrl = body.url || `/uploads/${body.storage_path}`;
+    const folderId = sanitizeNullable(body.folder_id);
     const teamId = sanitizeNullable(body.team_id);
+    const folder = folderId ? getFolderById(folderId) : null;
 
     if (teamId && !isTeamOwner(currentUser.id, teamId)) {
       json(res, 403, { error: 'Only the team owner can create files directly in this team.' });
+      return;
+    }
+
+    if (folderId && !folder) {
+      json(res, 404, { error: 'Folder not found.' });
+      return;
+    }
+
+    if (folder && !canAccessFolder(currentUser.id, folder)) {
+      json(res, 403, { error: 'You do not have permission to use this folder.' });
+      return;
+    }
+
+    if (folder && sanitizeNullable(folder.team_id) !== teamId) {
+      json(res, 400, { error: 'File team must match the target folder team.' });
       return;
     }
 
@@ -1101,7 +1153,7 @@ async function handleApi(req, res, url) {
       fileUrl,
       body.thumbnail_url ?? (fileType === 'image' ? fileUrl : null),
       body.storage_path,
-      sanitizeNullable(body.folder_id),
+      folderId,
       timestamp,
       timestamp,
       currentUser.id,
@@ -1128,10 +1180,15 @@ async function handleApi(req, res, url) {
     }
 
     const body = await readJsonBody(req);
+    const nextFolderId =
+      body.folder_id !== undefined
+        ? sanitizeNullable(body.folder_id)
+        : existing.folder_id;
     const nextTeamId =
       body.team_id !== undefined
         ? sanitizeNullable(body.team_id)
         : existing.team_id;
+    const nextFolder = nextFolderId ? getFolderById(nextFolderId) : null;
 
     if (body.team_id !== undefined && existing.user_id !== currentUser.id) {
       json(res, 403, { error: 'Only the owner can change the file team.' });
@@ -1143,13 +1200,28 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (nextFolderId && !nextFolder) {
+      json(res, 404, { error: 'Folder not found.' });
+      return;
+    }
+
+    if (nextFolder && !canAccessFolder(currentUser.id, nextFolder)) {
+      json(res, 403, { error: 'You do not have permission to use this folder.' });
+      return;
+    }
+
+    if (nextFolder && sanitizeNullable(nextFolder.team_id) !== nextTeamId) {
+      json(res, 400, { error: 'File team must match the target folder team.' });
+      return;
+    }
+
     db.prepare(`
       UPDATE files
       SET name = ?, folder_id = ?, team_id = ?, updated_at = ?
       WHERE id = ?
     `).run(
       body.name ?? existing.name,
-      body.folder_id !== undefined ? sanitizeNullable(body.folder_id) : existing.folder_id,
+      nextFolderId,
       nextTeamId,
       now(),
       id,
