@@ -1476,14 +1476,47 @@ export default function SpaceManagementWorkspacePage() {
         <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="text-lg font-semibold text-slate-900">空间头像</div>
           <div className="mt-5 flex justify-center">
-            <SpaceAvatar
-              team={team}
-              avatarUrlOverride={settingsAvatarUrl || null}
-              className="h-28 w-28 rounded-[32px] object-cover"
-            />
+            <label htmlFor="space-avatar-upload" className={`group relative ${isOwner ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+              <SpaceAvatar
+                team={team}
+                avatarUrlOverride={settingsAvatarUrl || null}
+                className="h-28 w-28 rounded-[32px] object-cover"
+              />
+              {settingsAvatarUrl.trim() ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSettingsAvatarUrl('');
+                    setSettingsFeedback('空间头像已清空，保存设置后生效。');
+                  }}
+                  disabled={!isOwner || isUploadingAvatar}
+                  className="absolute -right-2 -top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition hover:bg-black/85 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label="清空空间头像"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              ) : null}
+              <input
+                id="space-avatar-upload"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={!isOwner || isUploadingAvatar}
+                onChange={(event) => void handleAvatarUpload(event)}
+              />
+              <div className="absolute -bottom-2 -right-2 rounded-full bg-white p-2 text-slate-500 shadow-sm">
+                {isUploadingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImagePlus className="h-4 w-4" />}
+              </div>
+            </label>
           </div>
 
-          <label className="mt-6 inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-50">
+          <div className="mt-4 text-center text-sm text-slate-500">
+            点击头像可直接上传或更换空间头像，右上角悬浮小叉可清除头像。
+          </div>
+
+          <label className="hidden mt-6 inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-50">
             <ImagePlus className="h-4 w-4" />
             {isUploadingAvatar ? '上传中...' : '上传空间头像'}
             <input
@@ -1499,7 +1532,7 @@ export default function SpaceManagementWorkspacePage() {
             type="button"
             onClick={() => setSettingsAvatarUrl('')}
             disabled={!isOwner || isUploadingAvatar}
-            className="mt-3 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="hidden mt-3 w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             清空头像
           </button>

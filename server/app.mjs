@@ -79,6 +79,19 @@ function isTeamOwner(userId, teamId) {
   return Boolean(team && team.owner_user_id === userId);
 }
 
+function serializeTeamForUser(team, userId) {
+  if (!team) return null;
+
+  const isOwner = Boolean(userId && team.owner_user_id === userId);
+  const membership = userId ? getTeamMembership(team.id, userId) : null;
+
+  return {
+    ...team,
+    is_owner: isOwner,
+    membership_status: isOwner ? 'approved' : membership?.status ?? team.membership_status ?? null,
+  };
+}
+
 function canViewDocument(userId, document) {
   if (!document) return false;
   if (document.user_id === userId) return true;
@@ -414,7 +427,7 @@ async function handleApi(req, res, url) {
       WHERE id = ?
     `).run(nextName, nextAvatarUrl, nextMemberLimit, nextCreatedAt, now(), teamId);
 
-    json(res, 200, getTeamById(teamId));
+    json(res, 200, serializeTeamForUser(getTeamById(teamId), currentUser.id));
     return;
   }
 
@@ -434,7 +447,7 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    json(res, 200, team);
+    json(res, 200, serializeTeamForUser(team, currentUser.id));
     return;
   }
 
