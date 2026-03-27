@@ -22,13 +22,14 @@ import {
   Trash2,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import NameInputModal from './NameInputModal';
 import ProfileSettingsUploadModal from './ProfileSettingsUploadModal';
 import { authService } from '../lib/authApi';
-import { teamService } from '../lib/databaseApi';
+import { publicResourceService, teamService } from '../lib/databaseApi';
 import type { DocTreeItem } from '../lib/documentsApi';
-import type { Team, User } from '../lib/types';
+import type { PublicDocumentSummary, PublicFileSummary, Team, TeamInvitation, User } from '../lib/types';
 import { useNavigate } from 'react-router-dom';
 
 interface WorkspaceSidebarProps {
@@ -60,6 +61,14 @@ const shortcutItems = [
   { key: 'star', label: '收藏', icon: Star },
   { key: 'public', label: '公开', icon: Globe },
 ] as const;
+
+interface PublicShareFeedItem {
+  id: string;
+  title: string;
+  kind: 'document' | 'file';
+  shareToken: string;
+  updatedAt: string;
+}
 
 function getInitials(name: string) {
   return name.trim().charAt(0).toUpperCase() || '?';
@@ -110,22 +119,110 @@ export default function WorkspaceSidebar({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; docId: string } | null>(null);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [notificationMenuOpen, setNotificationMenuOpen] = useState(false);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(true);
   const [teams, setTeams] = useState<Team[]>([]);
   const [accounts, setAccounts] = useState<User[]>([]);
+  const [pendingInvitations, setPendingInvitations] = useState<TeamInvitation[]>([]);
+  const [publicDocuments, setPublicDocuments] = useState<PublicDocumentSummary[]>([]);
+  const [publicFiles, setPublicFiles] = useState<PublicFileSummary[]>([]);
   const [showCreateSpaceDialog, setShowCreateSpaceDialog] = useState(false);
   const [draftSpaceName, setDraftSpaceName] = useState('');
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
+  const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
+  const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
+  const [copiedNotificationKey, setCopiedNotificationKey] = useState('');
   const [menuError, setMenuError] = useState('');
+  const [notificationError, setNotificationError] = useState('');
   const [activeTeamMemberCount, setActiveTeamMemberCount] = useState(0);
   const [activeTeamOwner, setActiveTeamOwner] = useState<User | null>(null);
   const workspaceMenuRef = useRef<HTMLDivElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const notificationMenuRef = useRef<HTMLDivElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  const publicShareItems = useMemo<PublicShareFeedItem[]>(() => {
+    if (!user) {
+      return [];
+    }
+
+    const ownedDocuments = publicDocuments
+      .filter((document) => document.user_id === user.id)
+      .map((document) => ({
+        id: `document:${document.id}`,
+        title: document.title,
+        kind: 'document' as const,
+        shareToken: document.share_token,
+        updatedAt: document.updated_at,
+      }));
+
+    const ownedFiles = publicFiles
+      .filter((file) => file.user_id === user.id)
+      .map((file) => ({
+        id: `file:${file.id}`,
+        title: file.name,
+        kind: 'file' as const,
+        shareToken: file.share_token,
+        updatedAt: file.updated_at,
+      }));
+
+    return [...ownedDocuments, ...ownedFiles]
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+      .slice(0, 6);
+  }, [publicDocuments, publicFiles, user]);
+
+  const systemNotifications = useMemo(() => {
+    const items: Array<{ id: string; title: string; detail: string }> = [];
+
+    if (activeWorkspaceTeam) {
+      items.push({
+        id: 'workspace-active',
+        title: `当前空间：${activeWorkspaceTeam.name}`,
+        detail: '你可以继续在当前空间中编辑内容，或在这里处理邀请与公开动态。',
+      });
+    } else {
+      items.push({
+        id: 'workspace-personal',
+        title: '当前处于个人空间',
+        detail: '即使还没有加入任何团队空间，也可以在这里直接接受空间邀请。',
+      });
+    }
+
+    items.push({
+      id: 'invite-summary',
+      title:
+        pendingInvitations.length > 0
+          ? `收到 ${pendingInvitations.length} 条待处理空间邀请`
+          : '当前没有待处理空间邀请',
+      detail:
+        pendingInvitations.length > 0
+          ? '点击接受后会直接进入对应空间。'
+          : '有新的团队邀请时，会优先显示在这里。',
+    });
+
+    items.push({
+      id: 'public-summary',
+      title:
+        publicShareItems.length > 0
+          ? `${publicShareItems.length} 个公开资源正在展示`
+          : '当前没有公开分享资源',
+      detail:
+        publicShareItems.length > 0
+          ? '公开笔记和文件会持续通过分享链接对外可见。'
+          : '将笔记或文件设为公开后，会自动汇总到这里。',
+    });
+
+    return items;
+  }, [activeWorkspaceTeam, pendingInvitations.length, publicShareItems.length]);
+
+  const notificationBadgeCount = useMemo(
+    () => pendingInvitations.length + publicShareItems.length,
+    [pendingInvitations.length, publicShareItems.length],
+  );
 
   const allDocs = useMemo(() => {
     const result: DocTreeItem[] = [];
@@ -158,6 +255,10 @@ export default function WorkspaceSidebar({
 
       if (accountMenuRef.current && !accountMenuRef.current.contains(target)) {
         setAccountMenuOpen(false);
+      }
+
+      if (notificationMenuRef.current && !notificationMenuRef.current.contains(target)) {
+        setNotificationMenuOpen(false);
       }
 
       if (contextMenuRef.current && !contextMenuRef.current.contains(target)) {
@@ -228,9 +329,75 @@ export default function WorkspaceSidebar({
     void loadAccounts();
   }, [accountMenuOpen, user?.id]);
 
+  const loadNotificationFeed = async () => {
+    if (!user) {
+      setPendingInvitations([]);
+      setPublicDocuments([]);
+      setPublicFiles([]);
+      return;
+    }
+
+    setIsLoadingNotifications(true);
+
+    try {
+      setNotificationError('');
+      const [invitationResult, documentResult, fileResult] = await Promise.allSettled([
+        teamService.getMyInvitations(),
+        publicResourceService.getDocuments(),
+        publicResourceService.getFiles(),
+      ]);
+
+      const errors: string[] = [];
+
+      if (invitationResult.status === 'fulfilled') {
+        setPendingInvitations(invitationResult.value);
+      } else {
+        setPendingInvitations([]);
+        errors.push(invitationResult.reason instanceof Error ? invitationResult.reason.message : '空间邀请加载失败');
+      }
+
+      if (documentResult.status === 'fulfilled') {
+        setPublicDocuments(documentResult.value);
+      } else {
+        setPublicDocuments([]);
+        errors.push(documentResult.reason instanceof Error ? documentResult.reason.message : '公开笔记加载失败');
+      }
+
+      if (fileResult.status === 'fulfilled') {
+        setPublicFiles(fileResult.value);
+      } else {
+        setPublicFiles([]);
+        errors.push(fileResult.reason instanceof Error ? fileResult.reason.message : '公开文件加载失败');
+      }
+
+      if (errors.length > 0) {
+        setNotificationError(errors[0]);
+      }
+    } catch (error) {
+      setPendingInvitations([]);
+      setPublicDocuments([]);
+      setPublicFiles([]);
+      setNotificationError(error instanceof Error ? error.message : '消息面板加载失败');
+    } finally {
+      setIsLoadingNotifications(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setPendingInvitations([]);
+      setPublicDocuments([]);
+      setPublicFiles([]);
+      return;
+    }
+
+    void loadNotificationFeed();
+  }, [user?.id]);
+
   useEffect(() => {
     setWorkspaceMenuOpen(false);
     setAccountMenuOpen(false);
+    setNotificationMenuOpen(false);
     setShowCreateSpaceDialog(false);
     setShowProfileModal(false);
   }, [user?.id]);
@@ -385,6 +552,69 @@ export default function WorkspaceSidebar({
     setAccountMenuOpen(false);
   };
 
+  const handleAcceptInvitation = async (invitation: TeamInvitation) => {
+    setBusyInvitationId(invitation.id);
+    setNotificationError('');
+
+    try {
+      const joinedTeam = await teamService.acceptInvitation(invitation.id);
+      if (!joinedTeam) {
+        setNotificationError('接受邀请失败');
+        return;
+      }
+
+      setPendingInvitations((current) => current.filter((item) => item.id !== invitation.id));
+      setTeams((current) => {
+        if (current.some((team) => team.id === joinedTeam.id)) {
+          return current;
+        }
+        return [joinedTeam, ...current];
+      });
+      setNotificationMenuOpen(false);
+      onEnterTeamSpace(joinedTeam);
+      onTabChange('docs');
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : '接受邀请失败');
+    } finally {
+      setBusyInvitationId(null);
+    }
+  };
+
+  const handleRejectInvitation = async (invitationId: string) => {
+    setBusyInvitationId(invitationId);
+    setNotificationError('');
+
+    try {
+      const ok = await teamService.rejectInvitation(invitationId);
+      if (!ok) {
+        setNotificationError('拒绝邀请失败');
+        return;
+      }
+
+      setPendingInvitations((current) => current.filter((item) => item.id !== invitationId));
+    } catch (error) {
+      setNotificationError(error instanceof Error ? error.message : '拒绝邀请失败');
+    } finally {
+      setBusyInvitationId(null);
+    }
+  };
+
+  const handleCopyPublicLink = async (shareToken: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/share/${shareToken}`);
+      setCopiedNotificationKey(key);
+      window.setTimeout(() => setCopiedNotificationKey(''), 1800);
+    } catch {
+      setCopiedNotificationKey('');
+      setNotificationError('复制公开链接失败');
+    }
+  };
+
+  const openPublicTab = () => {
+    setNotificationMenuOpen(false);
+    onTabChange('public');
+  };
+
   const openSpaceManagement = (teamId: string, section = 'overview') => {
     setWorkspaceMenuOpen(false);
     navigate(`/spaces/${encodeURIComponent(teamId)}/manage?section=${encodeURIComponent(section)}`);
@@ -401,6 +631,7 @@ export default function WorkspaceSidebar({
                 onClick={() => {
                   setWorkspaceMenuOpen((prev) => !prev);
                   setAccountMenuOpen(false);
+                  setNotificationMenuOpen(false);
                 }}
                 className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-white/80"
               >
@@ -571,14 +802,175 @@ export default function WorkspaceSidebar({
               )}
             </div>
 
-            <button
-              type="button"
-              className="relative rounded-xl p-2 text-slate-500 transition hover:bg-white/80 hover:text-slate-700"
-              title="通知"
-            >
-              <Bell className="h-5 w-5" />
-              <span className="absolute right-2.5 top-2.5 h-2 w-2 rounded-full bg-blue-500" />
-            </button>
+            <div ref={notificationMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setNotificationMenuOpen((prev) => !prev);
+                  setWorkspaceMenuOpen(false);
+                  setAccountMenuOpen(false);
+                  if (!notificationMenuOpen) {
+                    void loadNotificationFeed();
+                  }
+                }}
+                className="relative rounded-xl p-2 text-slate-500 transition hover:bg-white/80 hover:text-slate-700"
+                title="消息"
+              >
+                <Bell className="h-5 w-5" />
+                {notificationBadgeCount > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-semibold text-white">
+                    {notificationBadgeCount > 99 ? '99+' : notificationBadgeCount}
+                  </span>
+                ) : null}
+              </button>
+
+              {notificationMenuOpen ? (
+                <div className="absolute left-0 top-[calc(100%+8px)] z-50 max-h-[78vh] w-[min(420px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">消息中心</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {`空间邀请 ${pendingInvitations.length} 条，公开资源 ${publicShareItems.length} 个`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void loadNotificationFeed()}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-white"
+                      >
+                        {isLoadingNotifications ? '刷新中...' : '刷新'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {pendingInvitations.length === 0 ? (
+                      <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+                        暂时没有新消息
+                      </div>
+                    ) : (
+                      pendingInvitations.map((invitation) => {
+                        const isBusy = busyInvitationId === invitation.id;
+                        return (
+                          <div key={invitation.id} className="rounded-2xl border border-slate-200 px-4 py-4">
+                            <div className="text-sm font-semibold text-slate-900">
+                              邀请你加入「{invitation.team?.name || '未命名空间'}」
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              账号：{invitation.invited_user?.email || invitation.invited_email || user?.email || '当前账号'}
+                            </div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              发起时间：{new Date(invitation.created_at).toLocaleString('zh-CN')}
+                            </div>
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void handleAcceptInvitation(invitation)}
+                                disabled={busyInvitationId !== null}
+                                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <Check className="h-4 w-4" />
+                                {isBusy ? '处理中...' : '接受'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleRejectInvitation(invitation.id)}
+                                disabled={busyInvitationId !== null}
+                                className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                <X className="h-4 w-4" />
+                                忽略
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">公开分享</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {publicShareItems.length > 0 ? `最近公开 ${publicShareItems.length} 个资源` : '当前没有公开资源'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={openPublicTab}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
+                      >
+                        打开公开页
+                      </button>
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {publicShareItems.length === 0 ? (
+                        <div className="rounded-2xl bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">
+                          还没有公开分享的笔记或文件
+                        </div>
+                      ) : (
+                        publicShareItems.map((item) => {
+                          const copyKey = `public:${item.id}`;
+                          return (
+                            <div key={item.id} className="rounded-2xl bg-slate-50 px-4 py-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="truncate text-sm font-semibold text-slate-900">{item.title}</div>
+                                  <div className="mt-1 text-xs text-slate-500">
+                                    {item.kind === 'document' ? '公开笔记' : '公开文件'}
+                                  </div>
+                                  <div className="mt-1 text-xs text-slate-400">
+                                    更新时间：{new Date(item.updatedAt).toLocaleString('zh-CN')}
+                                  </div>
+                                </div>
+                                <Globe className="h-4 w-4 shrink-0 text-slate-400" />
+                              </div>
+                              <div className="mt-3 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void handleCopyPublicLink(item.shareToken, copyKey)}
+                                  className="inline-flex flex-1 items-center justify-center rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 transition hover:bg-white"
+                                >
+                                  {copiedNotificationKey === copyKey ? '已复制' : '复制链接'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => window.open(`${window.location.origin}/share/${item.shareToken}`, '_blank', 'noopener,noreferrer')}
+                                  className="inline-flex flex-1 items-center justify-center rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-700 transition hover:bg-white"
+                                >
+                                  查看分享
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
+                    <div className="text-sm font-semibold text-slate-900">系统通知</div>
+                    <div className="mt-3 space-y-2">
+                      {systemNotifications.map((item) => (
+                        <div key={item.id} className="rounded-2xl bg-slate-50 px-4 py-4">
+                          <div className="text-sm font-semibold text-slate-900">{item.title}</div>
+                          <div className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {notificationError ? (
+                    <div className="mt-3 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                      {notificationError}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
 
             <div ref={accountMenuRef} className="relative">
               <button
@@ -586,6 +978,7 @@ export default function WorkspaceSidebar({
                 onClick={() => {
                   setAccountMenuOpen((prev) => !prev);
                   setWorkspaceMenuOpen(false);
+                  setNotificationMenuOpen(false);
                 }}
                 className="rounded-full p-0.5 transition hover:bg-white/80"
                 aria-label="账号菜单"
