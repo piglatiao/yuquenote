@@ -64,6 +64,8 @@ interface ActionDialogState {
   onConfirm?: () => void | Promise<void>;
 }
 
+const videoThumbnailCache = new Map<string, string>();
+
 const mapFolder = (folder: Folder): FolderItem => ({
   id: folder.id,
   name: folder.name,
@@ -1269,6 +1271,103 @@ function MediaGridSection({
   );
 }
 
+interface VideoCardPreviewProps {
+  file: FileItem;
+}
+
+function VideoCardPreview({ file }: VideoCardPreviewProps) {
+  const [thumbnail, setThumbnail] = useState<string | null>(() => file.thumbnail || videoThumbnailCache.get(file.url) || null);
+
+  useEffect(() => {
+    if (file.type !== 'video') {
+      return;
+    }
+
+    if (file.thumbnail) {
+      videoThumbnailCache.set(file.url, file.thumbnail);
+      setThumbnail(file.thumbnail);
+      return;
+    }
+
+    const cachedThumbnail = videoThumbnailCache.get(file.url);
+    if (cachedThumbnail) {
+      setThumbnail(cachedThumbnail);
+      return;
+    }
+
+    let disposed = false;
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+
+    const cleanup = () => {
+      video.removeEventListener('loadeddata', handleLoadedData);
+      video.removeEventListener('seeked', captureFrame);
+      video.removeEventListener('error', cleanup);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    };
+
+    const captureFrame = () => {
+      if (disposed || !video.videoWidth || !video.videoHeight) {
+        return;
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        return;
+      }
+
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const nextThumbnail = canvas.toDataURL('image/jpeg', 0.82);
+      videoThumbnailCache.set(file.url, nextThumbnail);
+      setThumbnail(nextThumbnail);
+      cleanup();
+    };
+
+    const handleLoadedData = () => {
+      const targetTime = Number.isFinite(video.duration) && video.duration > 0 ? Math.min(video.duration / 3, 1) : 0;
+      if (targetTime <= 0) {
+        captureFrame();
+        return;
+      }
+
+      try {
+        video.currentTime = targetTime;
+      } catch {
+        captureFrame();
+      }
+    };
+
+    video.addEventListener('loadeddata', handleLoadedData);
+    video.addEventListener('seeked', captureFrame);
+    video.addEventListener('error', cleanup);
+    video.src = file.url;
+    video.load();
+
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [file.thumbnail, file.type, file.url]);
+
+  if (thumbnail) {
+    return <img src={thumbnail} alt={file.name} className="h-full w-full object-cover" />;
+  }
+
+  return (
+    <div className="relative h-full w-full bg-gradient-to-br from-slate-900 via-slate-800 to-slate-700">
+      <video src={file.url} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent" />
+    </div>
+  );
+}
+
 interface FileRowSectionProps {
   title: string;
   icon: ReactNode;
@@ -1479,12 +1578,15 @@ function MediaCard({
             {file.thumbnail || file.type === 'image' ? (
               <img src={file.thumbnail || file.url} alt={file.name} className="h-full w-full object-cover" />
             ) : file.type === 'video' ? (
-              <div className="flex h-full items-center justify-center bg-gradient-to-br from-indigo-100 to-violet-200">
-                <Video className="h-12 w-12 text-indigo-500" />
-              </div>
+              <VideoCardPreview file={file} />
             ) : (
               <div className="flex h-full items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200">
                 <div className="rounded-2xl bg-white p-4 shadow-sm">{getFileIcon(file.type)}</div>
+              </div>
+            )}
+            {file.type === 'video' && (
+              <div className="pointer-events-none absolute bottom-3 left-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow-sm">
+                <Video className="h-4 w-4" />
               </div>
             )}
             {!selectionMode && (

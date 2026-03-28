@@ -1,3 +1,4 @@
+import { applyStoredUserHeader } from './api';
 import { STORAGE_CONFIG, getFileTypeFromExtension, type FileType } from './supabase';
 import type { UploadProgress } from './types';
 
@@ -26,8 +27,10 @@ export const storageService = {
         params.set('teamId', options.teamId);
       }
 
+      const headers = applyStoredUserHeader(new Headers());
       const response = await fetch(`/api/files/upload?${params.toString()}`, {
         method: 'POST',
+        headers,
         body: file,
       });
 

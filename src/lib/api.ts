@@ -11,9 +11,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers || {});
-
+export function applyStoredUserHeader(headers: Headers): Headers {
   try {
     const stored = window.localStorage.getItem(USER_KEY);
     if (stored) {
@@ -25,6 +23,12 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}): Promi
   } catch {
     // Ignore malformed local state and let the request proceed unauthenticated.
   }
+
+  return headers;
+}
+
+export async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = applyStoredUserHeader(new Headers(init.headers || {}));
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
