@@ -90,6 +90,7 @@ export interface FileRecord {
   updated_at: string;
   user_id: string | null;
   team_id?: string | null;
+  is_starred: boolean;
 }
 
 export interface Folder {

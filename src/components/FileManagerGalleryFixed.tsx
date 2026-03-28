@@ -15,6 +15,7 @@ import {
   Music,
   Search,
   Share2,
+  Star,
   Trash2,
   Upload,
   Video,
@@ -31,6 +32,8 @@ interface FileManagerProps {
   initialFolderId?: string;
   teamId?: string | null;
   initialPreviewFileId?: string | null;
+  onFolderChange?: (folderId: string | null) => void;
+  onPreviewFileChange?: (fileId: string | null) => void;
   onInitialPreviewHandled?: () => void;
 }
 
@@ -52,6 +55,7 @@ interface FileItem {
   uploadedAt: Date;
   folderId?: string;
   teamId?: string | null;
+  isStarred: boolean;
 }
 
 interface ActionDialogState {
@@ -84,6 +88,7 @@ const mapFile = (file: FileRecord): FileItem => ({
   uploadedAt: new Date(file.created_at),
   folderId: file.folder_id || undefined,
   teamId: file.team_id || null,
+  isStarred: Boolean(file.is_starred),
 });
 
 const formatFileSize = (bytes: number) => {
@@ -155,6 +160,8 @@ export default function FileManagerGalleryFixed({
   initialFolderId,
   teamId = null,
   initialPreviewFileId = null,
+  onFolderChange,
+  onPreviewFileChange,
   onInitialPreviewHandled,
 }: FileManagerProps) {
   const [folders, setFolders] = useState<FolderItem[]>([]);
@@ -174,6 +181,7 @@ export default function FileManagerGalleryFixed({
   const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
+  const [supportsFileFavorites, setSupportsFileFavorites] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scopedFolders = useMemo(
@@ -229,6 +237,9 @@ export default function FileManagerGalleryFixed({
 
   const loadAllFiles = async () => {
     const data = await fileService.getAll(teamId);
+    setSupportsFileFavorites(
+      data.every((file) => typeof file.is_starred === 'boolean'),
+    );
     setAllFiles(data.map(mapFile));
   };
 
@@ -236,9 +247,22 @@ export default function FileManagerGalleryFixed({
     await Promise.all([loadFolders(), loadAllFiles()]);
   };
 
+  const applyUpdatedFile = (updatedRecord: FileRecord) => {
+    const updated = mapFile(updatedRecord);
+
+    setAllFiles((prev) => prev.map((file) => (file.id === updated.id ? updated : file)));
+    setSelectedFile((prev) => (prev?.id === updated.id ? updated : prev));
+    setShareFile((prev) => (prev?.id === updated.id ? updated : prev));
+    setMovingFiles((prev) => prev.map((file) => (file.id === updated.id ? updated : file)));
+  };
+
   useEffect(() => {
     setCurrentFolderId(initialFolderId ?? null);
   }, [initialFolderId, teamId]);
+
+  useEffect(() => {
+    onFolderChange?.(currentFolderId);
+  }, [currentFolderId, onFolderChange]);
 
   useEffect(() => {
     void Promise.all([loadFolders(), loadAllFiles()]);
@@ -261,6 +285,10 @@ export default function FileManagerGalleryFixed({
     onFileSelect?.(target);
     onInitialPreviewHandled?.();
   }, [initialPreviewFileId, scopedAllFiles, onFileSelect, onInitialPreviewHandled]);
+
+  useEffect(() => {
+    onPreviewFileChange?.(selectedFile?.id ?? null);
+  }, [onPreviewFileChange, selectedFile?.id]);
   useEffect(() => {
     const allIds = new Set(scopedAllFiles.map((file) => file.id));
     setSelectedMediaIds((prev) => {
@@ -450,6 +478,35 @@ export default function FileManagerGalleryFixed({
     setNewFolderName('');
     setShowNewFolderModal(false);
     await refreshFiles();
+  };
+
+  const handleToggleStar = async (file: FileItem) => {
+    if (!supportsFileFavorites) {
+      openInfoDialog(
+        '文件收藏暂未生效',
+        '当前后端还没有完成文件收藏字段升级。请重启后端后再试，重启后会自动把 is_starred 字段迁移到数据库。',
+      );
+      return;
+    }
+
+    const updated = await fileService.update(file.id, {
+      is_starred: !file.isStarred,
+    });
+
+    if (!updated) {
+      openInfoDialog('收藏失败', '更新文件收藏状态失败。');
+      return;
+    }
+
+    if (typeof updated.is_starred !== 'boolean') {
+      openInfoDialog(
+        '文件收藏暂未生效',
+        '后端返回的数据里没有 is_starred 字段，通常是后端还没重启。请重启后端后再试。',
+      );
+      return;
+    }
+
+    applyUpdatedFile(updated);
   };
 
   const handleDeleteFile = async (file: FileItem) => {
@@ -821,6 +878,7 @@ export default function FileManagerGalleryFixed({
           onLongPressSelect={handleLongPressSelect}
           onToggleSelect={toggleMediaSelection}
           onOpen={openPreview}
+          onToggleStar={handleToggleStar}
           onShare={setShareFile}
           onDelete={handleDeleteFile}
           onMove={openMoveModal}
@@ -836,6 +894,7 @@ export default function FileManagerGalleryFixed({
           onLongPressSelect={handleLongPressSelect}
           onToggleSelect={toggleMediaSelection}
           onOpen={openPreview}
+          onToggleStar={handleToggleStar}
           onShare={setShareFile}
           onDelete={handleDeleteFile}
           onMove={openMoveModal}
@@ -848,6 +907,7 @@ export default function FileManagerGalleryFixed({
           getPath={renderPath}
           onOpen={openPreview}
           onDownload={(file) => storageService.downloadFile(file.url, file.name)}
+          onToggleStar={handleToggleStar}
           onShare={setShareFile}
           onDelete={handleDeleteFile}
         />
@@ -859,6 +919,7 @@ export default function FileManagerGalleryFixed({
           getPath={renderPath}
           onOpen={openPreview}
           onDownload={(file) => storageService.downloadFile(file.url, file.name)}
+          onToggleStar={handleToggleStar}
           onShare={setShareFile}
           onDelete={handleDeleteFile}
         />
@@ -882,6 +943,7 @@ export default function FileManagerGalleryFixed({
               onLongPressSelect={handleLongPressSelect}
               onToggleSelect={toggleMediaSelection}
               onOpen={openPreview}
+              onToggleStar={handleToggleStar}
               onShare={setShareFile}
               onDelete={handleDeleteFile}
               onMove={openMoveModal}
@@ -897,6 +959,7 @@ export default function FileManagerGalleryFixed({
               onLongPressSelect={handleLongPressSelect}
               onToggleSelect={toggleMediaSelection}
               onOpen={openPreview}
+              onToggleStar={handleToggleStar}
               onShare={setShareFile}
               onDelete={handleDeleteFile}
               onMove={openMoveModal}
@@ -1223,6 +1286,7 @@ interface MediaGridSectionProps {
   onLongPressSelect: (fileId: string) => void;
   onToggleSelect: (fileId: string) => void;
   onOpen: (file: FileItem) => void;
+  onToggleStar: (file: FileItem) => void;
   onShare: (file: FileItem) => void;
   onDelete: (file: FileItem) => void;
   onMove?: (file: FileItem) => void;
@@ -1238,6 +1302,7 @@ function MediaGridSection({
   onLongPressSelect,
   onToggleSelect,
   onOpen,
+  onToggleStar,
   onShare,
   onDelete,
   onMove,
@@ -1261,6 +1326,7 @@ function MediaGridSection({
             onLongPressSelect={() => onLongPressSelect(file.id)}
             onToggleSelect={() => onToggleSelect(file.id)}
             onOpen={() => onOpen(file)}
+            onToggleStar={() => onToggleStar(file)}
             onShare={() => onShare(file)}
             onDelete={() => onDelete(file)}
             onMove={onMove ? () => onMove(file) : undefined}
@@ -1375,11 +1441,12 @@ interface FileRowSectionProps {
   getPath: (file: FileItem) => string;
   onOpen: (file: FileItem) => void;
   onDownload: (file: FileItem) => void;
+  onToggleStar: (file: FileItem) => void;
   onShare: (file: FileItem) => void;
   onDelete: (file: FileItem) => void;
 }
 
-function FileRowSection({ title, icon, files, getPath, onOpen, onDownload, onShare, onDelete }: FileRowSectionProps) {
+function FileRowSection({ title, icon, files, getPath, onOpen, onDownload, onToggleStar, onShare, onDelete }: FileRowSectionProps) {
   if (files.length === 0) return null;
 
   return (
@@ -1396,6 +1463,7 @@ function FileRowSection({ title, icon, files, getPath, onOpen, onDownload, onSha
             pathLabel={getPath(file)}
             onOpen={() => onOpen(file)}
             onDownload={() => onDownload(file)}
+            onToggleStar={() => onToggleStar(file)}
             onShare={() => onShare(file)}
             onDelete={() => onDelete(file)}
           />
@@ -1413,6 +1481,7 @@ interface MediaCardProps {
   onLongPressSelect: () => void;
   onToggleSelect: () => void;
   onOpen: () => void;
+  onToggleStar: () => void;
   onShare: () => void;
   onDelete: () => void;
   onMove?: () => void;
@@ -1426,6 +1495,7 @@ function MediaCard({
   onLongPressSelect,
   onToggleSelect,
   onOpen,
+  onToggleStar,
   onShare,
   onDelete,
   onMove,
@@ -1518,6 +1588,13 @@ function MediaCard({
           </label>
         )}
 
+        {!selectionMode && file.isStarred && (
+          <div className="absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-lg bg-amber-50/95 px-2 py-1 text-xs text-amber-700 shadow-sm">
+            <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+            已收藏
+          </div>
+        )}
+
         <div ref={menuRef} className="absolute right-2 top-2 z-20">
           <button
             type="button"
@@ -1532,6 +1609,13 @@ function MediaCard({
           </button>
           {showMenu && (
             <div className="absolute right-0 mt-1 min-w-[110px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+              <button
+                type="button"
+                onClick={() => runMenuAction(onToggleStar)}
+                className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+              >
+                {file.isStarred ? '取消收藏' : '收藏'}
+              </button>
               <button
                 type="button"
                 onClick={() => runMenuAction(onShare)}
@@ -1615,18 +1699,27 @@ interface FileRowProps {
   pathLabel: string;
   onOpen: () => void;
   onDownload: () => void;
+  onToggleStar: () => void;
   onShare: () => void;
   onDelete: () => void;
 }
 
-function FileRow({ file, pathLabel, onOpen, onDownload, onShare, onDelete }: FileRowProps) {
+function FileRow({ file, pathLabel, onOpen, onDownload, onToggleStar, onShare, onDelete }: FileRowProps) {
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-3">
           <div className="rounded-xl bg-slate-100 p-3">{getFileIcon(file.type)}</div>
           <div className="min-w-0">
-            <div className="truncate font-medium text-slate-900">{file.name}</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="truncate font-medium text-slate-900">{file.name}</div>
+              {file.isStarred && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700">
+                  <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+                  已收藏
+                </span>
+              )}
+            </div>
             <div className="mt-1 text-sm text-slate-500">
               {formatFileSize(file.size)} · {formatTime(file.uploadedAt)}
             </div>
@@ -1648,6 +1741,18 @@ function FileRow({ file, pathLabel, onOpen, onDownload, onShare, onDelete }: Fil
           className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
         >
           <Download className="h-4 w-4" />下载
+        </button>
+        <button
+          type="button"
+          onClick={onToggleStar}
+          className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+            file.isStarred
+              ? 'border-amber-200 text-amber-700 hover:bg-amber-50'
+              : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <Star className={`h-4 w-4 ${file.isStarred ? 'fill-amber-400 text-amber-400' : ''}`} />
+          {file.isStarred ? '取消收藏' : '收藏'}
         </button>
         <button
           type="button"

@@ -7,6 +7,7 @@ interface HeaderProps {
   isEditing: boolean;
   onSave: () => void;
   lastSaved?: Date;
+  canEditTitle?: boolean;
   showShare?: boolean;
   onShare?: () => void;
   showComments?: boolean;
@@ -21,6 +22,7 @@ export default function Header({
   isEditing,
   onSave,
   lastSaved,
+  canEditTitle = true,
   showShare = false,
   onShare,
   showComments = false,
@@ -35,6 +37,12 @@ export default function Header({
   useEffect(() => {
     setTitleValue(title);
   }, [title]);
+
+  useEffect(() => {
+    if (!canEditTitle) {
+      setIsEditingTitle(false);
+    }
+  }, [canEditTitle]);
 
   const handleTitleSubmit = () => {
     if (titleValue.trim()) {
@@ -61,7 +69,7 @@ export default function Header({
     <header className="h-14 bg-white border-b border-yuque-border flex items-center justify-between px-4 shrink-0">
       {/* Left side - Title */}
       <div className="flex items-center gap-4 flex-1 min-w-0">
-        {isEditingTitle ? (
+        {isEditingTitle && canEditTitle ? (
           <input
             type="text"
             value={titleValue}
@@ -79,8 +87,14 @@ export default function Header({
           />
         ) : (
           <h1
-            className="text-lg font-semibold text-yuque-text truncate cursor-pointer hover:text-yuque-primary transition-colors"
-            onClick={() => setIsEditingTitle(true)}
+            className={`text-lg font-semibold text-yuque-text truncate transition-colors ${
+              canEditTitle ? 'cursor-pointer hover:text-yuque-primary' : ''
+            }`}
+            onClick={() => {
+              if (canEditTitle) {
+                setIsEditingTitle(true);
+              }
+            }}
           >
             {title || '未命名文档'}
           </h1>

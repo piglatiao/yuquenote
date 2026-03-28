@@ -80,6 +80,17 @@ export function documentRowToModel(row) {
   };
 }
 
+export function fileRowToModel(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...row,
+    is_starred: Boolean(row.is_starred),
+  };
+}
+
 export function todoRowToModel(row) {
   return {
     ...row,
@@ -419,6 +430,7 @@ db.exec(`
 
 ensureColumn('documents', 'team_id', 'TEXT');
 ensureColumn('files', 'team_id', 'TEXT');
+ensureColumn('files', 'is_starred', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('folders', 'team_id', 'TEXT');
 ensureColumn('share_links', 'team_id', 'TEXT');
 ensureColumn('teams', 'avatar_url', 'TEXT');
@@ -545,7 +557,7 @@ export function listFiles(folderId) {
   const rows = folderId
     ? db.prepare('SELECT * FROM files WHERE folder_id = ? ORDER BY created_at DESC').all(folderId)
     : db.prepare('SELECT * FROM files WHERE folder_id IS NULL ORDER BY created_at DESC').all();
-  return rows;
+  return rows.map(fileRowToModel);
 }
 
 export function listShareLinks(documentId) {
@@ -556,7 +568,7 @@ export function listShareLinks(documentId) {
 }
 
 export function getFileById(id) {
-  return db.prepare('SELECT * FROM files WHERE id = ?').get(id) || null;
+  return fileRowToModel(db.prepare('SELECT * FROM files WHERE id = ?').get(id));
 }
 
 export function getShareLinkByToken(token) {
@@ -812,7 +824,9 @@ export function listPublicFiles() {
     ORDER BY f.updated_at DESC
   `).all();
 
-  return rows;
+  return rows
+    .map(fileRowToModel)
+    .filter(Boolean);
 }
 
 export function deleteDocumentRecursive(id) {

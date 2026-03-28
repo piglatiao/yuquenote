@@ -240,10 +240,18 @@ export default function WorkspaceSidebar({
 
   const docMap = useMemo(() => new Map(allDocs.map((item) => [item.id, item])), [allDocs]);
   const filteredTree = useMemo(() => filterTree(docTree, normalizedQuery), [docTree, normalizedQuery]);
+  const starredDocs = useMemo(
+    () =>
+      allDocs
+        .filter((item) => item.is_starred)
+        .filter((item) => item.title.toLowerCase().includes(normalizedQuery)),
+    [allDocs, normalizedQuery],
+  );
   const selectedTreeNode = selectedDocId ? docMap.get(selectedDocId) || null : null;
   const contextTarget = contextMenu ? docMap.get(contextMenu.docId) || null : null;
   const createParentId = selectedTreeNode?.icon === 'folder' ? selectedTreeNode.id : selectedTreeNode?.parent_id ?? null;
   const workspaceSubLabel = activeWorkspaceTeam?.name || '个人空间';
+  const isDocumentLikeTab = activeTab === 'docs' || activeTab === 'star';
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -427,7 +435,7 @@ export default function WorkspaceSidebar({
   };
 
   const handleTreeSelect = (doc: DocTreeItem) => {
-    onTabChange('docs');
+    onTabChange(activeTab === 'star' ? 'star' : 'docs');
     onDocSelect(doc);
   };
 
@@ -444,7 +452,7 @@ export default function WorkspaceSidebar({
   const renderDoc = (doc: DocTreeItem, level = 0): JSX.Element => {
     const hasChildren = doc.children.length > 0;
     const isExpanded = expandedIds.has(doc.id);
-    const isSelected = selectedDocId === doc.id && activeTab === 'docs';
+    const isSelected = selectedDocId === doc.id && isDocumentLikeTab;
 
     return (
       <div key={doc.id}>
@@ -1129,19 +1137,21 @@ export default function WorkspaceSidebar({
 
             {knowledgeBaseOpen && (
               <div className="mt-1 space-y-1">
-                {filteredTree.length === 0 ? (
+                {(activeTab === 'star' ? starredDocs.length === 0 : filteredTree.length === 0) ? (
                   <div className="rounded-2xl px-4 py-6 text-center text-sm text-slate-400">
-                    这里还没有内容
-                    <button
-                      type="button"
-                      onClick={() => onCreateFolder(createParentId)}
-                      className="mt-3 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
-                    >
-                      新建文件夹
-                    </button>
+                    {activeTab === 'star' ? '这里还没有收藏内容' : '这里还没有内容'}
+                    {activeTab !== 'star' && (
+                      <button
+                        type="button"
+                        onClick={() => onCreateFolder(createParentId)}
+                        className="mt-3 block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                      >
+                        新建文件夹
+                      </button>
+                    )}
                   </div>
                 ) : (
-                  filteredTree.map((doc) => renderDoc(doc))
+                  (activeTab === 'star' ? starredDocs : filteredTree).map((doc) => renderDoc(doc))
                 )}
               </div>
             )}

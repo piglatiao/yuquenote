@@ -13,6 +13,7 @@ import {
   db,
   deleteDocumentRecursive,
   documentRowToModel,
+  fileRowToModel,
   getDocumentById,
   getFolderById,
   getFileById,
@@ -1700,7 +1701,9 @@ async function handleApi(req, res, url) {
       json(
         res,
         200,
-        rows.filter((file) => canViewFile(currentUser.id, file) && matchesRequestedWorkspace(file)),
+        rows
+          .map(fileRowToModel)
+          .filter((file) => file && canViewFile(currentUser.id, file) && matchesRequestedWorkspace(file)),
       );
       return;
     }
@@ -1814,8 +1817,8 @@ async function handleApi(req, res, url) {
     }
 
     db.prepare(`
-      INSERT INTO files (id, name, type, size, url, thumbnail_url, storage_path, folder_id, created_at, updated_at, user_id, team_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO files (id, name, type, size, url, thumbnail_url, storage_path, folder_id, created_at, updated_at, user_id, team_id, is_starred)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       body.name,
@@ -1829,9 +1832,10 @@ async function handleApi(req, res, url) {
       timestamp,
       currentUser.id,
       teamId,
+      Number(Boolean(body.is_starred)),
     );
 
-    json(res, 201, db.prepare('SELECT * FROM files WHERE id = ?').get(id));
+    json(res, 201, getFileById(id));
     return;
   }
 
@@ -1888,17 +1892,18 @@ async function handleApi(req, res, url) {
 
     db.prepare(`
       UPDATE files
-      SET name = ?, folder_id = ?, team_id = ?, updated_at = ?
+      SET name = ?, folder_id = ?, team_id = ?, is_starred = ?, updated_at = ?
       WHERE id = ?
     `).run(
       body.name ?? existing.name,
       nextFolderId,
       nextTeamId,
+      body.is_starred !== undefined ? Number(Boolean(body.is_starred)) : Number(existing.is_starred),
       now(),
       id,
     );
 
-    json(res, 200, db.prepare('SELECT * FROM files WHERE id = ?').get(id));
+    json(res, 200, getFileById(id));
     return;
   }
 

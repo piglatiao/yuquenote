@@ -10,11 +10,12 @@ import NameInputModal from './components/NameInputModal';
 import PublicLibrary from './components/PublicLibraryManagerPanel';
 import ResourceShareModal from './components/ResourceShareModal';
 import TeamWorkspace from './components/TeamWorkspacePanel';
+import FavoritesPanel from './components/FavoritesPanel';
 import { authService } from './lib/authApi';
 import { teamService } from './lib/databaseApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
-import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary } from './lib/types';
+import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary, FileRecord } from './lib/types';
 import { useSearchParams } from 'react-router-dom';
 import './App.css';
 
@@ -29,6 +30,13 @@ interface NameDialogState {
   fallbackValue: string;
   parentId: string | null;
   docId?: string;
+}
+
+const APP_TABS = new Set(['docs', 'files', 'star', 'teams', 'public']);
+const DOCUMENT_VIEW_TABS = new Set(['docs']);
+
+function normalizeAppTab(value: string | null): string {
+  return value && APP_TABS.has(value) ? value : 'docs';
 }
 
 function filterDocTreeByWorkspace(items: DocTreeItem[], teamId: string | null): DocTreeItem[] {
@@ -61,9 +69,10 @@ function collectTreeIds(items: DocTreeItem[]): Set<string> {
 
 function App() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = normalizeAppTab(searchParams.get('tab'));
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [showFileManager, setShowFileManager] = useState(false);
+  const [showFileManager, setShowFileManager] = useState(initialTab === 'files');
 
   // Document state
   const [docTree, setDocTree] = useState<DocTreeItem[]>([]);
@@ -74,22 +83,42 @@ function App() {
   const [lastSaved, setLastSaved] = useState<Date | undefined>(new Date());
 
   // UI state
-  const [activeTab, setActiveTab] = useState('docs');
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [searchQuery, setSearchQuery] = useState('');
   const [showShareModal, setShowShareModal] = useState(false);
-  const [showComments, setShowComments] = useState(false);
-  const [showTodos, setShowTodos] = useState(false);
+  const [showComments, setShowComments] = useState(DOCUMENT_VIEW_TABS.has(initialTab) && searchParams.get('comments') === '1');
+  const [showTodos, setShowTodos] = useState(DOCUMENT_VIEW_TABS.has(initialTab) && searchParams.get('todos') === '1');
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
   const [activeWorkspaceTeam, setActiveWorkspaceTeam] = useState<Team | null>(null);
-  const [pendingPreviewFileId, setPendingPreviewFileId] = useState<string | null>(null);
+  const [fileManagerFolderId, setFileManagerFolderId] = useState<string | null>(
+    initialTab === 'files' ? searchParams.get('folder') : null,
+  );
+  const [pendingPreviewFileId, setPendingPreviewFileId] = useState<string | null>(
+    initialTab === 'files' ? searchParams.get('file') : null,
+  );
+  const [selectedTeamsTabTeamId, setSelectedTeamsTabTeamId] = useState<string | null>(
+    initialTab === 'teams' ? searchParams.get('teamPanel') : null,
+  );
   const selectedDocIdRef = useRef<string | null>(null);
   const editVersionRef = useRef(0);
   const isSavingRef = useRef(false);
   const pendingSaveRef = useRef(false);
+  const suppressSearchStateSyncRef = useRef(false);
 
   useEffect(() => {
     selectedDocIdRef.current = selectedDoc?.id ?? null;
   }, [selectedDoc?.id]);
+
+  const updateSearchState = useCallback(
+    (updater: (params: URLSearchParams) => void) => {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        updater(next);
+        return next.toString() === prev.toString() ? prev : next;
+      }, { replace: true });
+    },
+    [setSearchParams],
+  );
 
   useEffect(() => {
     if (!user) return;
@@ -116,11 +145,107 @@ function App() {
     };
   }, [user?.id, searchParams]);
 
+  useEffect(() => {
+    const nextTab = normalizeAppTab(searchParams.get('tab'));
+    const nextShowFileManager = nextTab === 'files';
+    const nextShowComments = DOCUMENT_VIEW_TABS.has(nextTab) && searchParams.get('comments') === '1';
+    const nextShowTodos = DOCUMENT_VIEW_TABS.has(nextTab) && searchParams.get('todos') === '1';
+    const nextRequestedDocId = DOCUMENT_VIEW_TABS.has(nextTab) ? searchParams.get('doc') : null;
+    const nextFolderId = nextShowFileManager ? searchParams.get('folder') : null;
+    const nextPreviewFileId = nextShowFileManager ? searchParams.get('file') : null;
+    const nextSelectedTeamsTabTeamId = nextTab === 'teams' ? searchParams.get('teamPanel') : null;
+
+    const shouldRestoreFromUrl =
+      activeTab !== nextTab ||
+      ((DOCUMENT_VIEW_TABS.has(activeTab) ? selectedDoc?.id ?? null : null) !== nextRequestedDocId) ||
+      showFileManager !== nextShowFileManager ||
+      showComments !== nextShowComments ||
+      showTodos !== nextShowTodos ||
+      fileManagerFolderId !== nextFolderId ||
+      pendingPreviewFileId !== nextPreviewFileId ||
+      selectedTeamsTabTeamId !== nextSelectedTeamsTabTeamId;
+
+    if (shouldRestoreFromUrl) {
+      suppressSearchStateSyncRef.current = true;
+    }
+
+    setActiveTab((prev) => (prev === nextTab ? prev : nextTab));
+    setShowFileManager((prev) => (prev === nextShowFileManager ? prev : nextShowFileManager));
+    setShowComments((prev) => (prev === nextShowComments ? prev : nextShowComments));
+    setShowTodos((prev) => (prev === nextShowTodos ? prev : nextShowTodos));
+    setFileManagerFolderId((prev) => (prev === nextFolderId ? prev : nextFolderId));
+    setPendingPreviewFileId((prev) => (prev === nextPreviewFileId ? prev : nextPreviewFileId));
+    setSelectedTeamsTabTeamId((prev) => (prev === nextSelectedTeamsTabTeamId ? prev : nextSelectedTeamsTabTeamId));
+
+    if (nextTab === 'docs' && !nextRequestedDocId) {
+      setSelectedDoc((prev) => (prev ? null : prev));
+      setDocTitle((prev) => (prev ? '' : prev));
+      setContent((prev) => (prev ? '' : prev));
+      setIsEditing(false);
+    }
+  }, [searchParams]);
+
   const visibleDocTree = useMemo(() => {
     return filterDocTreeByWorkspace(docTree, activeWorkspaceTeam?.id ?? null);
   }, [docTree, activeWorkspaceTeam]);
 
   const visibleDocIds = useMemo(() => collectTreeIds(visibleDocTree), [visibleDocTree]);
+
+  useEffect(() => {
+    if (suppressSearchStateSyncRef.current) {
+      suppressSearchStateSyncRef.current = false;
+      return;
+    }
+
+    updateSearchState((params) => {
+      params.set('tab', activeTab);
+
+      if (DOCUMENT_VIEW_TABS.has(activeTab) && selectedDoc?.id) {
+        params.set('doc', selectedDoc.id);
+      } else {
+        params.delete('doc');
+      }
+
+      if (DOCUMENT_VIEW_TABS.has(activeTab) && showComments) {
+        params.set('comments', '1');
+      } else {
+        params.delete('comments');
+      }
+
+      if (DOCUMENT_VIEW_TABS.has(activeTab) && showTodos) {
+        params.set('todos', '1');
+      } else {
+        params.delete('todos');
+      }
+
+      if (activeTab === 'files' && pendingPreviewFileId) {
+        params.set('file', pendingPreviewFileId);
+      } else {
+        params.delete('file');
+      }
+
+      if (activeTab === 'files' && fileManagerFolderId) {
+        params.set('folder', fileManagerFolderId);
+      } else {
+        params.delete('folder');
+      }
+
+      if (activeTab === 'teams' && selectedTeamsTabTeamId) {
+        params.set('teamPanel', selectedTeamsTabTeamId);
+      } else {
+        params.delete('teamPanel');
+      }
+    });
+  }, [
+    activeTab,
+    fileManagerFolderId,
+    pendingPreviewFileId,
+    selectedDoc?.id,
+    selectedTeamsTabTeamId,
+    showComments,
+    showTodos,
+    updateSearchState,
+  ]);
 
   // Initialize app
   useEffect(() => {
@@ -194,10 +319,13 @@ function App() {
 
   const handleLogout = async () => {
     await authService.logout();
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      next.delete('team');
-      return next;
+    updateSearchState((params) => {
+      params.delete('team');
+      params.delete('tab');
+      params.delete('doc');
+      params.delete('comments');
+      params.delete('todos');
+      params.delete('file');
     });
     setUser(null);
     setDocTree([]);
@@ -209,6 +337,7 @@ function App() {
   const openDocumentById = useCallback(async (docId: string) => {
     const fullDoc = await documentService.getById(docId);
     if (fullDoc) {
+      setActiveTab('docs');
       setSelectedDoc(fullDoc);
       setDocTitle(fullDoc.title);
       setContent(fullDoc.content);
@@ -217,6 +346,7 @@ function App() {
       pendingSaveRef.current = false;
       setLastSaved(new Date(fullDoc.updated_at));
       setShowFileManager(false);
+      setPendingPreviewFileId(null);
       setShowComments(false);
       setShowTodos(false);
     }
@@ -227,11 +357,53 @@ function App() {
   }, [openDocumentById]);
 
   const handleFilesSelect = useCallback(() => {
+    setActiveTab('files');
     setShowFileManager(true);
     setSelectedDoc(null);
     setShowComments(false);
     setShowTodos(false);
   }, []);
+
+  useEffect(() => {
+    if (!user || !DOCUMENT_VIEW_TABS.has(activeTab)) return;
+
+    const requestedDocId = searchParams.get('doc');
+    const requestedTeamId = searchParams.get('team');
+    if (!requestedDocId) return;
+    if (selectedDoc?.id === requestedDocId) return;
+    if (requestedTeamId && activeWorkspaceTeam?.id !== requestedTeamId) return;
+
+    let cancelled = false;
+
+    const loadRequestedDocument = async () => {
+      const fullDoc = await documentService.getById(requestedDocId);
+      if (cancelled) return;
+
+      if (!fullDoc) {
+        updateSearchState((params) => {
+          params.delete('doc');
+          params.delete('comments');
+          params.delete('todos');
+        });
+        return;
+      }
+
+      setSelectedDoc(fullDoc);
+      setDocTitle(fullDoc.title);
+      setContent(fullDoc.content);
+      setIsEditing(false);
+      editVersionRef.current = 0;
+      pendingSaveRef.current = false;
+      setLastSaved(new Date(fullDoc.updated_at));
+      setShowFileManager(false);
+    };
+
+    void loadRequestedDocument();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, activeWorkspaceTeam?.id, searchParams, selectedDoc?.id, updateSearchState, user]);
 
   useEffect(() => {
     if (selectedDoc && !visibleDocIds.has(selectedDoc.id)) {
@@ -313,9 +485,8 @@ function App() {
       setSelectedDoc(null);
       setShowComments(false);
       setShowTodos(false);
-    } else if (tab === 'teams' || tab === 'public') {
+    } else if (tab === 'teams' || tab === 'public' || tab === 'star') {
       setShowFileManager(false);
-      setSelectedDoc(null);
       setShowComments(false);
       setShowTodos(false);
     } else {
@@ -599,7 +770,7 @@ function App() {
     await openDocumentById(document.id);
   }, [openDocumentById, setSearchParams]);
 
-  const handleOpenPublicFile = useCallback(async (file: PublicFileSummary) => {
+  const handleOpenFileRecord = useCallback(async (file: Pick<FileRecord, 'id' | 'team_id'>) => {
     const targetTeamId = file.team_id ?? null;
     if (targetTeamId) {
       const team = await teamService.getById(targetTeamId);
@@ -625,6 +796,10 @@ function App() {
     setShowFileManager(true);
   }, [setSearchParams]);
 
+  const handleOpenPublicFile = useCallback(async (file: PublicFileSummary) => {
+    await handleOpenFileRecord(file);
+  }, [handleOpenFileRecord]);
+
   const headerTitle = showFileManager
     ? '文件管理'
     : activeTab === 'teams'
@@ -634,6 +809,18 @@ function App() {
         : selectedDoc
           ? docTitle
           : '开始';
+  const pageTitle = showFileManager
+    ? '文件管理'
+    : activeTab === 'teams'
+      ? '空间管理'
+      : activeTab === 'star'
+        ? '收藏'
+        : activeTab === 'public'
+          ? '公开资源'
+          : selectedDoc
+            ? docTitle
+            : '开始';
+  const canShowDocActions = activeTab === 'docs' && !!selectedDoc && !showFileManager;
 
   // Loading state
   if (isLoading) {
@@ -682,16 +869,17 @@ function App() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header */}
         <Header
-          title={headerTitle}
+          title={pageTitle}
           onTitleChange={handleTitleChange}
-          isEditing={isEditing}
+          isEditing={canShowDocActions ? isEditing : false}
           onSave={handleSave}
-          lastSaved={lastSaved}
-          showShare={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
+          lastSaved={canShowDocActions ? lastSaved : undefined}
+          canEditTitle={canShowDocActions}
+          showShare={canShowDocActions}
           onShare={() => setShowShareModal(true)}
-          showComments={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
+          showComments={canShowDocActions}
           onToggleComments={() => setShowComments(!showComments)}
-          showTodos={!!selectedDoc && !showFileManager && activeTab !== 'teams' && activeTab !== 'public'}
+          showTodos={canShowDocActions}
           onToggleTodos={() => setShowTodos(!showTodos)}
         />
 
@@ -699,13 +887,18 @@ function App() {
         <div className="flex-1 overflow-hidden">
           {showFileManager ? (
             <FileManager
+              initialFolderId={fileManagerFolderId ?? undefined}
               teamId={activeWorkspaceTeam?.id ?? null}
               initialPreviewFileId={pendingPreviewFileId}
-              onInitialPreviewHandled={() => setPendingPreviewFileId(null)}
+              onFolderChange={setFileManagerFolderId}
+              onPreviewFileChange={setPendingPreviewFileId}
+              onInitialPreviewHandled={() => undefined}
             />
           ) : activeTab === 'teams' ? (
             <TeamWorkspace
               activeWorkspaceTeamId={activeWorkspaceTeam?.id ?? null}
+              initialSelectedTeamId={selectedTeamsTabTeamId}
+              onSelectedTeamChange={setSelectedTeamsTabTeamId}
               onEnterTeamSpace={handleEnterTeamSpace}
             />
           ) : activeTab === 'public' ? (
@@ -714,7 +907,18 @@ function App() {
               onEditDocument={handleEditPublicDocument}
               onOpenFile={handleOpenPublicFile}
             />
-          ) : selectedDoc ? (
+          ) : activeTab === 'star' ? (
+            <FavoritesPanel
+              docTree={visibleDocTree}
+              teamId={activeWorkspaceTeam?.id ?? null}
+              onOpenDocument={(docId) => {
+                void openDocumentById(docId);
+              }}
+              onOpenFile={(file) => {
+                void handleOpenFileRecord(file);
+              }}
+            />
+          ) : activeTab === 'docs' && selectedDoc ? (
             <div className="h-full flex">
               {/* Editor */}
               <div className="flex-1 overflow-y-auto">
@@ -790,7 +994,7 @@ function App() {
         onCancel={() => setNameDialog(null)}
       />
 
-      {selectedDoc && (
+      {activeTab === 'docs' && selectedDoc && (
         <ResourceShareModal
           isOpen={showShareModal}
           onClose={() => setShowShareModal(false)}

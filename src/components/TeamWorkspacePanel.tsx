@@ -7,6 +7,8 @@ import type { Team, TeamInvitation, TeamMember } from '../lib/types';
 
 interface TeamWorkspacePanelProps {
   activeWorkspaceTeamId?: string | null;
+  initialSelectedTeamId?: string | null;
+  onSelectedTeamChange?: (teamId: string | null) => void;
   onEnterTeamSpace?: (team: Team) => void;
 }
 
@@ -45,13 +47,15 @@ function getStatusText(team: Team) {
 
 export default function TeamWorkspacePanel({
   activeWorkspaceTeamId = null,
+  initialSelectedTeamId = null,
+  onSelectedTeamChange,
   onEnterTeamSpace,
 }: TeamWorkspacePanelProps) {
   const navigate = useNavigate();
   const [teams, setTeams] = useState<Team[]>([]);
   const [discoverableTeams, setDiscoverableTeams] = useState<Team[]>([]);
   const [myInvitations, setMyInvitations] = useState<TeamInvitation[]>([]);
-  const [selectedTeamId, setSelectedTeamId] = useState('');
+  const [selectedTeamId, setSelectedTeamId] = useState(initialSelectedTeamId ?? '');
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [joinRequests, setJoinRequests] = useState<TeamMember[]>([]);
   const [memberQuery, setMemberQuery] = useState('');
@@ -152,6 +156,18 @@ export default function TeamWorkspacePanel({
 
     setSelectedTeamId((current) => (current === activeWorkspaceTeamId ? current : activeWorkspaceTeamId));
   }, [activeWorkspaceTeamId]);
+
+  useEffect(() => {
+    if (!initialSelectedTeamId) {
+      return;
+    }
+
+    setSelectedTeamId((current) => (current === initialSelectedTeamId ? current : initialSelectedTeamId));
+  }, [initialSelectedTeamId]);
+
+  useEffect(() => {
+    onSelectedTeamChange?.(selectedTeamId || null);
+  }, [onSelectedTeamChange, selectedTeamId]);
 
   const handleCreateTeam = async () => {
     const nextName = draftTeamName.trim();
