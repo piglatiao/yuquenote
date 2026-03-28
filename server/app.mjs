@@ -185,6 +185,85 @@ function canAccessFolder(userId, folder) {
   return isApprovedTeamMember(userId, teamId);
 }
 
+function canManageFolder(userId, folder) {
+  if (!folder || !userId) return false;
+  const teamId = sanitizeNullable(folder.team_id);
+  if (!teamId) {
+    return folder.user_id === userId;
+  }
+  return isTeamOwner(userId, teamId);
+}
+
+function collectDescendantFolderIds(rootFolderId) {
+  const rows = listFolders();
+  const childrenByParentId = new Map();
+
+  rows.forEach((folder) => {
+    const parentId = sanitizeNullable(folder.parent_id);
+    if (!parentId) {
+      return;
+    }
+
+    const siblings = childrenByParentId.get(parentId) ?? [];
+    siblings.push(folder.id);
+    childrenByParentId.set(parentId, siblings);
+  });
+
+  const ids = [];
+  const stack = [rootFolderId];
+
+  while (stack.length > 0) {
+    const currentId = stack.pop();
+    if (!currentId || ids.includes(currentId)) {
+      continue;
+    }
+
+    ids.push(currentId);
+    const childIds = childrenByParentId.get(currentId) ?? [];
+    childIds.forEach((childId) => stack.push(childId));
+  }
+
+  return ids;
+}
+
+function listFilesInFolders(folderIds) {
+  if (!Array.isArray(folderIds) || folderIds.length === 0) {
+    return [];
+  }
+
+  const placeholders = folderIds.map(() => '?').join(', ');
+  return db.prepare(`SELECT * FROM files WHERE folder_id IN (${placeholders}) ORDER BY created_at DESC`).all(...folderIds);
+}
+
+async function deleteFileRecords(files) {
+  for (const file of files) {
+    const fullPath = path.join(FILES_DIR, ...String(file.storage_path).split('/'));
+    if (existsSync(fullPath)) {
+      await unlink(fullPath).catch(() => undefined);
+    }
+  }
+
+  files.forEach((file) => {
+    db.prepare('DELETE FROM share_links WHERE file_id = ?').run(file.id);
+    db.prepare("DELETE FROM resource_permissions WHERE resource_type = 'file' AND resource_id = ?").run(file.id);
+    db.prepare('DELETE FROM files WHERE id = ?').run(file.id);
+  });
+}
+
+function normalizeRequestedTeamId(rawValue) {
+  if (rawValue === '__personal__') {
+    return null;
+  }
+  return sanitizeNullable(rawValue);
+}
+
+function buildWorkspaceStorageScope(teamId) {
+  if (!teamId) {
+    return 'personal';
+  }
+  return `team-${String(teamId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
 function ensureTeamOwner(res, userId, teamId) {
   if (!teamId || !isTeamOwner(userId, teamId)) {
     json(res, 403, { error: 'Only the team owner can manage this team.' });
@@ -1020,10 +1099,31 @@ async function handleApi(req, res, url) {
     const id = newId();
     const parentId = sanitizeNullable(body.parent_id);
     const teamId = sanitizeNullable(body.team_id);
+    const parentDocument = parentId ? getDocumentById(parentId) : null;
     const orderIndex = body.order_index ?? getNextOrderIndex('documents', 'parent_id', parentId);
 
     if (teamId && !isTeamOwner(currentUser.id, teamId)) {
       json(res, 403, { error: 'Only the team owner can create documents directly in this team.' });
+      return;
+    }
+
+    if (parentId && !parentDocument) {
+      json(res, 404, { error: 'Parent document not found.' });
+      return;
+    }
+
+    if (parentDocument && parentDocument.icon !== 'folder') {
+      json(res, 400, { error: 'Parent document must be a folder.' });
+      return;
+    }
+
+    if (parentDocument && !canEditDocument(currentUser.id, parentDocument)) {
+      json(res, 403, { error: 'You do not have permission to use this parent folder.' });
+      return;
+    }
+
+    if (parentDocument && sanitizeNullable(parentDocument.team_id) !== teamId) {
+      json(res, 400, { error: 'Document team must match the parent folder team.' });
       return;
     }
 
@@ -1086,6 +1186,11 @@ async function handleApi(req, res, url) {
       body.team_id !== undefined
         ? sanitizeNullable(body.team_id)
         : existing.team_id;
+    const nextParentId =
+      body.parent_id !== undefined
+        ? sanitizeNullable(body.parent_id)
+        : existing.parent_id;
+    const nextParentDocument = nextParentId ? getDocumentById(nextParentId) : null;
 
     if (body.team_id !== undefined && existing.user_id !== currentUser.id) {
       json(res, 403, { error: 'Only the owner can change the document team.' });
@@ -1097,6 +1202,31 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (nextParentId && !nextParentDocument) {
+      json(res, 404, { error: 'Parent document not found.' });
+      return;
+    }
+
+    if (nextParentDocument && nextParentDocument.id === existing.id) {
+      json(res, 400, { error: 'A document cannot be its own parent.' });
+      return;
+    }
+
+    if (nextParentDocument && nextParentDocument.icon !== 'folder') {
+      json(res, 400, { error: 'Parent document must be a folder.' });
+      return;
+    }
+
+    if (nextParentDocument && !canEditDocument(currentUser.id, nextParentDocument)) {
+      json(res, 403, { error: 'You do not have permission to use this parent folder.' });
+      return;
+    }
+
+    if (nextParentDocument && sanitizeNullable(nextParentDocument.team_id) !== nextTeamId) {
+      json(res, 400, { error: 'Document team must match the parent folder team.' });
+      return;
+    }
+
     db.prepare(`
       UPDATE documents
       SET title = ?, content = ?, parent_id = ?, icon = ?, user_id = ?, team_id = ?, is_starred = ?, order_index = ?, is_deleted = ?, updated_at = ?
@@ -1104,7 +1234,7 @@ async function handleApi(req, res, url) {
     `).run(
       body.title ?? existing.title,
       body.content ?? existing.content,
-      body.parent_id !== undefined ? sanitizeNullable(body.parent_id) : existing.parent_id,
+      nextParentId,
       body.icon ?? existing.icon,
       existing.user_id,
       nextTeamId,
@@ -1394,8 +1524,24 @@ async function handleApi(req, res, url) {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
 
+    const requestedTeamId = normalizeRequestedTeamId(url.searchParams.get('teamId'));
+    const hasWorkspaceFilter = url.searchParams.has('teamId');
     const rows = db.prepare('SELECT * FROM folders ORDER BY order_index, created_at').all();
-    json(res, 200, rows.filter((folder) => canAccessFolder(currentUser.id, folder)));
+    json(
+      res,
+      200,
+      rows.filter((folder) => {
+        if (!canAccessFolder(currentUser.id, folder)) {
+          return false;
+        }
+
+        if (!hasWorkspaceFilter) {
+          return true;
+        }
+
+        return sanitizeNullable(folder.team_id) === requestedTeamId;
+      }),
+    );
     return;
   }
 
@@ -1451,17 +1597,63 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'DELETE' && /^\/api\/folders\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const id = decodeURIComponent(url.pathname.replace('/api/folders/', ''));
+    const folder = getFolderById(id);
+    if (!folder) {
+      json(res, 404, { error: 'Folder not found.' });
+      return;
+    }
+
+    if (!canManageFolder(currentUser.id, folder)) {
+      json(res, 403, { error: 'You do not have permission to delete this folder.' });
+      return;
+    }
+
+    const folderIds = collectDescendantFolderIds(id);
+    const files = listFilesInFolders(folderIds);
+
+    await deleteFileRecords(files);
+
+    folderIds
+      .slice()
+      .reverse()
+      .forEach((folderId) => {
+        db.prepare('DELETE FROM folders WHERE id = ?').run(folderId);
+      });
+
+    sendEmpty(res);
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/files') {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
 
+    const requestedTeamId = normalizeRequestedTeamId(url.searchParams.get('teamId'));
+    const hasWorkspaceFilter = url.searchParams.has('teamId');
+    const matchesRequestedWorkspace = (file) =>
+      !hasWorkspaceFilter || sanitizeNullable(file.team_id) === requestedTeamId;
+
     if (url.searchParams.get('scope') === 'all') {
       const rows = db.prepare('SELECT * FROM files ORDER BY created_at DESC').all();
-      json(res, 200, rows.filter((file) => canViewFile(currentUser.id, file)));
+      json(
+        res,
+        200,
+        rows.filter((file) => canViewFile(currentUser.id, file) && matchesRequestedWorkspace(file)),
+      );
       return;
     }
 
-    json(res, 200, listFiles(sanitizeNullable(url.searchParams.get('folderId'))).filter((file) => canViewFile(currentUser.id, file)));
+    const folderId = sanitizeNullable(url.searchParams.get('folderId'));
+    json(
+      res,
+      200,
+      listFiles(folderId).filter((file) => canViewFile(currentUser.id, file) && matchesRequestedWorkspace(file)),
+    );
     return;
   }
 
@@ -1489,11 +1681,35 @@ async function handleApi(req, res, url) {
 
     const name = String(url.searchParams.get('name') || 'file.bin');
     const mimeType = String(url.searchParams.get('mimeType') || 'application/octet-stream');
+    const folderId = sanitizeNullable(url.searchParams.get('folderId'));
+    const teamId = normalizeRequestedTeamId(url.searchParams.get('teamId'));
+    const folder = folderId ? getFolderById(folderId) : null;
     const fileType = getFileType(name, mimeType);
     const dateFolder = new Date().toISOString().slice(0, 10);
     const storedFileName = `${Date.now()}-${newId()}${path.extname(name)}`;
-    const relativePath = path.posix.join(dateFolder, fileType, storedFileName);
+    const workspaceScope = buildWorkspaceStorageScope(teamId);
+    const relativePath = path.posix.join(workspaceScope, dateFolder, fileType, storedFileName);
     const fullPath = path.join(FILES_DIR, ...relativePath.split('/'));
+
+    if (teamId && !isTeamOwner(currentUser.id, teamId)) {
+      json(res, 403, { error: 'Only the team owner can upload files directly in this team.' });
+      return;
+    }
+
+    if (folderId && !folder) {
+      json(res, 404, { error: 'Folder not found.' });
+      return;
+    }
+
+    if (folder && !canAccessFolder(currentUser.id, folder)) {
+      json(res, 403, { error: 'You do not have permission to use this folder.' });
+      return;
+    }
+
+    if (folder && sanitizeNullable(folder.team_id) !== teamId) {
+      json(res, 400, { error: 'Upload workspace must match the target folder team.' });
+      return;
+    }
 
     await mkdir(path.dirname(fullPath), { recursive: true });
     await writeFile(fullPath, await readRequestBuffer(req));
@@ -1644,11 +1860,7 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const fullPath = path.join(FILES_DIR, ...String(file.storage_path).split('/'));
-    if (existsSync(fullPath)) {
-      await unlink(fullPath).catch(() => undefined);
-    }
-    db.prepare('DELETE FROM files WHERE id = ?').run(id);
+    await deleteFileRecords([file]);
     sendEmpty(res);
     return;
   }

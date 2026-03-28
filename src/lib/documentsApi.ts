@@ -131,6 +131,7 @@ export const documentService = {
       parent_id: doc.parent_id,
       icon: doc.icon,
       user_id: doc.user_id,
+      team_id: doc.team_id ?? null,
     });
   },
 };

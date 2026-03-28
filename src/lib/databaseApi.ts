@@ -1,4 +1,4 @@
-import { apiRequest, toJsonRequest } from './api';
+import { ApiError, apiRequest, toJsonRequest } from './api';
 import type {
   FileRecord,
   Folder,
@@ -14,8 +14,13 @@ import type {
 } from './types';
 
 export const folderService = {
-  async getAll(): Promise<Folder[]> {
-    return apiRequest<Folder[]>('/folders');
+  async getAll(teamId?: string | null): Promise<Folder[]> {
+    const params = new URLSearchParams();
+    if (teamId !== undefined) {
+      params.set('teamId', teamId || '__personal__');
+    }
+    const suffix = params.size > 0 ? `?${params.toString()}` : '';
+    return apiRequest<Folder[]>(`/folders${suffix}`);
   },
 
   async create(folder: Partial<Folder>): Promise<Folder | null> {
@@ -30,14 +35,27 @@ export const folderService = {
     return null;
   },
 
-  async delete(): Promise<boolean> {
-    return false;
+  async delete(id: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      await apiRequest<void>(`/folders/${id}`, { method: 'DELETE' });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : '删除文件夹失败';
+      if (message === 'Request failed with status 404' || message === 'Request failed with status 501') {
+        return { success: false, error: '删除接口暂不可用，请重启后端后再试。' };
+      }
+      return { success: false, error: message };
+    }
   },
 };
 
 export const fileService = {
-  async getAll(): Promise<FileRecord[]> {
-    return apiRequest<FileRecord[]>('/files?scope=all');
+  async getAll(teamId?: string | null): Promise<FileRecord[]> {
+    const params = new URLSearchParams({ scope: 'all' });
+    if (teamId !== undefined) {
+      params.set('teamId', teamId || '__personal__');
+    }
+    return apiRequest<FileRecord[]>(`/files?${params.toString()}`);
   },
 
   async getById(id: string): Promise<FileRecord | null> {
@@ -48,8 +66,15 @@ export const fileService = {
     }
   },
 
-  async getByFolder(folderId: string | null): Promise<FileRecord[]> {
-    const suffix = folderId ? `?folderId=${encodeURIComponent(folderId)}` : '';
+  async getByFolder(folderId: string | null, teamId?: string | null): Promise<FileRecord[]> {
+    const params = new URLSearchParams();
+    if (folderId) {
+      params.set('folderId', folderId);
+    }
+    if (teamId !== undefined) {
+      params.set('teamId', teamId || '__personal__');
+    }
+    const suffix = params.size > 0 ? `?${params.toString()}` : '';
     return apiRequest<FileRecord[]>(`/files${suffix}`);
   },
 

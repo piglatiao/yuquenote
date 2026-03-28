@@ -25,6 +25,7 @@ dist-ssr
 
 # Local app data (sqlite + uploaded files)
 data/
+dump.rdb
 
 # Environment files
 .env

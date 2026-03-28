@@ -4,6 +4,7 @@ import type { UploadProgress } from './types';
 export interface UploadOptions {
   bucketName?: string;
   folderId?: string;
+  teamId?: string | null;
   onProgress?: (progress: UploadProgress) => void;
 }
 
@@ -19,6 +20,10 @@ export const storageService = {
 
       if (options.folderId) {
         params.set('folderId', options.folderId);
+      }
+
+      if (options.teamId) {
+        params.set('teamId', options.teamId);
       }
 
       const response = await fetch(`/api/files/upload?${params.toString()}`, {

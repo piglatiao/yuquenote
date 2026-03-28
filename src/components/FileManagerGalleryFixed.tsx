@@ -54,6 +54,16 @@ interface FileItem {
   teamId?: string | null;
 }
 
+interface ActionDialogState {
+  title: string;
+  message: string;
+  tone?: 'default' | 'danger';
+  confirmText?: string;
+  cancelText?: string;
+  showCancel?: boolean;
+  onConfirm?: () => void | Promise<void>;
+}
+
 const mapFolder = (folder: Folder): FolderItem => ({
   id: folder.id,
   name: folder.name,
@@ -161,6 +171,7 @@ export default function FileManagerGalleryFixed({
   const [targetFolderId, setTargetFolderId] = useState('');
   const [selectedMediaIds, setSelectedMediaIds] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scopedFolders = useMemo(
@@ -190,13 +201,32 @@ export default function FileManagerGalleryFixed({
     [scopedAllFiles, selectedMediaIds],
   );
 
+  const openInfoDialog = (title: string, message: string) => {
+    setActionDialog({
+      title,
+      message,
+      confirmText: '知道了',
+      showCancel: false,
+    });
+  };
+
+  const openConfirmDialog = (dialog: ActionDialogState) => {
+    setActionDialog({
+      tone: 'default',
+      confirmText: '确认',
+      cancelText: '取消',
+      showCancel: true,
+      ...dialog,
+    });
+  };
+
   const loadFolders = async () => {
-    const data = await folderService.getAll();
+    const data = await folderService.getAll(teamId);
     setFolders(data.map(mapFolder));
   };
 
   const loadAllFiles = async () => {
-    const data = await fileService.getAll();
+    const data = await fileService.getAll(teamId);
     setAllFiles(data.map(mapFile));
   };
 
@@ -210,7 +240,7 @@ export default function FileManagerGalleryFixed({
 
   useEffect(() => {
     void Promise.all([loadFolders(), loadAllFiles()]);
-  }, []);
+  }, [teamId]);
 
   useEffect(() => {
     if (currentFolderId && !folderMap.has(currentFolderId)) {
@@ -318,7 +348,7 @@ export default function FileManagerGalleryFixed({
 
   const openUploadModal = () => {
     if (scopedFolders.length === 0) {
-      alert('请先创建文件夹，再上传文件。');
+      openInfoDialog('暂时无法上传', '请先创建文件夹，再上传文件。');
       return;
     }
 
@@ -328,7 +358,7 @@ export default function FileManagerGalleryFixed({
 
   const confirmUploadTarget = () => {
     if (!uploadTargetFolderId) {
-      alert('根路径下不允许直接上传，请先选择一个文件夹。');
+      openInfoDialog('请选择上传目录', '根路径下不允许直接上传，请先选择一个文件夹。');
       return;
     }
 
@@ -341,7 +371,7 @@ export default function FileManagerGalleryFixed({
     if (!uploadList?.length) return;
 
     if (!uploadTargetFolderId) {
-      alert('请先选择上传目录。');
+      openInfoDialog('请选择上传目录', '请先选择上传目录。');
       if (fileInputRef.current) fileInputRef.current.value = '';
       return;
     }
@@ -360,6 +390,7 @@ export default function FileManagerGalleryFixed({
 
         const upload = await storageService.uploadFile(file, {
           folderId: uploadTargetFolderId,
+          teamId,
           onProgress: ({ progress }) => {
             const completed = (index / uploadList.length) * 100;
             setUploadProgress(Math.min(100, Math.round(completed + progress / uploadList.length)));
@@ -394,7 +425,7 @@ export default function FileManagerGalleryFixed({
     }
 
     if (errors.length > 0) {
-      alert(errors.join('\n'));
+      openInfoDialog('部分文件上传失败', errors.join('\n'));
     }
   };
 
@@ -410,7 +441,7 @@ export default function FileManagerGalleryFixed({
     });
 
     if (!created) {
-      alert('创建文件夹失败');
+      openInfoDialog('创建失败', '创建文件夹失败。');
       return;
     }
 
@@ -420,48 +451,55 @@ export default function FileManagerGalleryFixed({
   };
 
   const handleDeleteFile = async (file: FileItem) => {
-    if (!window.confirm(`确定删除“${file.name}”吗？`)) {
-      return;
-    }
+    openConfirmDialog({
+      title: '删除文件',
+      message: `确定删除“${file.name}”吗？`,
+      tone: 'danger',
+      confirmText: '删除',
+      onConfirm: async () => {
+        const deleted = await fileService.delete(file.id);
+        if (!deleted) {
+          openInfoDialog('删除失败', '删除文件失败。');
+          return;
+        }
 
-    const deleted = await fileService.delete(file.id);
-    if (!deleted) {
-      alert('删除文件失败');
-      return;
-    }
+        if (selectedFile?.id === file.id) setSelectedFile(null);
+        if (shareFile?.id === file.id) setShareFile(null);
 
-    if (selectedFile?.id === file.id) setSelectedFile(null);
-    if (shareFile?.id === file.id) setShareFile(null);
+        setMovingFiles((prev) => prev.filter((item) => item.id !== file.id));
+        setSelectedMediaIds((prev) => prev.filter((id) => id !== file.id));
 
-    setMovingFiles((prev) => prev.filter((item) => item.id !== file.id));
-    setSelectedMediaIds((prev) => prev.filter((id) => id !== file.id));
-
-    await refreshFiles();
+        await refreshFiles();
+      },
+    });
   };
 
   const handleBatchDelete = async () => {
     if (selectedMediaFiles.length === 0) return;
+    openConfirmDialog({
+      title: '批量删除',
+      message: `确定删除选中的 ${selectedMediaFiles.length} 个图片/视频文件吗？`,
+      tone: 'danger',
+      confirmText: '删除',
+      onConfirm: async () => {
+        const selectedIds = new Set(selectedMediaFiles.map((file) => file.id));
+        const results = await Promise.all(selectedMediaFiles.map((file) => fileService.delete(file.id)));
 
-    if (!window.confirm(`确定删除选中的 ${selectedMediaFiles.length} 个图片/视频文件吗？`)) {
-      return;
-    }
+        if (results.some((item) => !item)) {
+          openInfoDialog('删除失败', '批量删除失败。');
+          return;
+        }
 
-    const selectedIds = new Set(selectedMediaFiles.map((file) => file.id));
-    const results = await Promise.all(selectedMediaFiles.map((file) => fileService.delete(file.id)));
+        if (selectedFile && selectedIds.has(selectedFile.id)) setSelectedFile(null);
+        if (shareFile && selectedIds.has(shareFile.id)) setShareFile(null);
 
-    if (results.some((item) => !item)) {
-      alert('批量删除失败');
-      return;
-    }
+        setMovingFiles((prev) => prev.filter((file) => !selectedIds.has(file.id)));
+        setSelectedMediaIds([]);
+        setSelectionMode(false);
 
-    if (selectedFile && selectedIds.has(selectedFile.id)) setSelectedFile(null);
-    if (shareFile && selectedIds.has(shareFile.id)) setShareFile(null);
-
-    setMovingFiles((prev) => prev.filter((file) => !selectedIds.has(file.id)));
-    setSelectedMediaIds([]);
-    setSelectionMode(false);
-
-    await refreshFiles();
+        await refreshFiles();
+      },
+    });
   };
 
   const openMoveModal = (files: FileItem[] | FileItem) => {
@@ -491,7 +529,7 @@ export default function FileManagerGalleryFixed({
     );
 
     if (results.some((item) => !item)) {
-      alert('批量移动失败');
+      openInfoDialog('移动失败', '批量移动失败。');
       return;
     }
 
@@ -531,6 +569,80 @@ export default function FileManagerGalleryFixed({
   const clearMediaSelection = () => {
     setSelectedMediaIds([]);
     setSelectionMode(false);
+  };
+
+  const getFolderDeleteImpact = (folderId: string) => {
+    const affectedFolderIds = new Set<string>();
+    const stack = [folderId];
+
+    while (stack.length > 0) {
+      const currentId = stack.pop();
+      if (!currentId || affectedFolderIds.has(currentId)) {
+        continue;
+      }
+
+      affectedFolderIds.add(currentId);
+      scopedFolders.forEach((folder) => {
+        if (folder.parentId === currentId) {
+          stack.push(folder.id);
+        }
+      });
+    }
+
+    const childFolderCount = Math.max(affectedFolderIds.size - 1, 0);
+    const fileCount = scopedAllFiles.filter((file) => file.folderId && affectedFolderIds.has(file.folderId)).length;
+
+    return {
+      affectedFolderIds,
+      childFolderCount,
+      fileCount,
+    };
+  };
+
+  const handleDeleteFolder = async (folder: FolderItem) => {
+    const { affectedFolderIds, childFolderCount, fileCount } = getFolderDeleteImpact(folder.id);
+    let message = `确定删除文件夹“${folder.name}”吗？`;
+
+    if (fileCount > 0 && childFolderCount > 0) {
+      message += `\n\n该文件夹及其 ${childFolderCount} 个子文件夹下共有 ${fileCount} 个文件，删除后会一并删除且不可恢复。`;
+    } else if (fileCount > 0) {
+      message += `\n\n该文件夹下共有 ${fileCount} 个文件，删除后会一并删除且不可恢复。`;
+    } else if (childFolderCount > 0) {
+      message += `\n\n该文件夹下共有 ${childFolderCount} 个子文件夹，删除后不可恢复。`;
+    }
+
+    openConfirmDialog({
+      title: '删除文件夹',
+      message,
+      tone: 'danger',
+      confirmText: '删除',
+      onConfirm: async () => {
+        const deleted = await folderService.delete(folder.id);
+        if (!deleted.success) {
+          openInfoDialog('删除失败', deleted.error || '删除文件夹失败。');
+          return;
+        }
+
+        if (currentFolderId && affectedFolderIds.has(currentFolderId)) {
+          setCurrentFolderId(folder.parentId || null);
+        }
+
+        if (selectedFile?.folderId && affectedFolderIds.has(selectedFile.folderId)) {
+          setSelectedFile(null);
+        }
+
+        if (shareFile?.folderId && affectedFolderIds.has(shareFile.folderId)) {
+          setShareFile(null);
+        }
+
+        setMovingFiles((prev) => prev.filter((file) => !file.folderId || !affectedFolderIds.has(file.folderId)));
+        setSelectedMediaIds((prev) =>
+          prev.filter((id) => !scopedAllFiles.some((file) => file.id === id && file.folderId && affectedFolderIds.has(file.folderId))),
+        );
+
+        await refreshFiles();
+      },
+    });
   };
 
   const showEmpty =
@@ -622,14 +734,24 @@ export default function FileManagerGalleryFixed({
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
         {currentFolder && (
-          <button
-            type="button"
-            onClick={() => setCurrentFolderId(currentFolder.parentId || null)}
-            className="mb-4 inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            返回上一层
-          </button>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setCurrentFolderId(currentFolder.parentId || null)}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              返回上一层
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteFolder(currentFolder)}
+              className="inline-flex items-center gap-2 rounded-lg border border-rose-200 px-3 py-2 text-sm text-rose-600 hover:bg-rose-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              删除当前文件夹
+            </button>
+          </div>
         )}
 
         {currentFolders.length > 0 && (
@@ -640,20 +762,13 @@ export default function FileManagerGalleryFixed({
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {currentFolders.map((folder) => (
-                <button
+                <FolderCard
                   key={folder.id}
-                  type="button"
-                  onClick={() => setCurrentFolderId(folder.id)}
-                  className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-left hover:border-blue-300 hover:bg-white"
-                >
-                  <div className="mb-4 inline-flex rounded-2xl bg-blue-100 p-3 text-blue-700">
-                    <FolderOpen className="h-6 w-6" />
-                  </div>
-                  <div className="text-base font-medium text-slate-900">{folder.name}</div>
-                  <div className="mt-1 text-sm text-slate-500">
-                    路径：{buildPathLabel(folder.id, folderMap)}
-                  </div>
-                </button>
+                  folder={folder}
+                  pathLabel={buildPathLabel(folder.id, folderMap)}
+                  onOpen={() => setCurrentFolderId(folder.id)}
+                  onDelete={() => void handleDeleteFolder(folder)}
+                />
               ))}
             </div>
           </section>
@@ -901,6 +1016,23 @@ export default function FileManagerGalleryFixed({
         </div>
       )}
 
+      {actionDialog && (
+        <ActionDialog
+          title={actionDialog.title}
+          message={actionDialog.message}
+          tone={actionDialog.tone}
+          confirmText={actionDialog.confirmText}
+          cancelText={actionDialog.cancelText}
+          showCancel={actionDialog.showCancel}
+          onClose={() => setActionDialog(null)}
+          onConfirm={async () => {
+            const handler = actionDialog.onConfirm;
+            setActionDialog(null);
+            await handler?.();
+          }}
+        />
+      )}
+
       {shareFile && (
         <ResourceShareModal
           isOpen
@@ -976,6 +1108,105 @@ export default function FileManagerGalleryFixed({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface FolderCardProps {
+  folder: FolderItem;
+  pathLabel: string;
+  onOpen: () => void;
+  onDelete: () => void;
+}
+
+function FolderCard({ folder, pathLabel, onOpen, onDelete }: FolderCardProps) {
+  return (
+    <div className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 transition hover:border-blue-300 hover:bg-white">
+      <button type="button" onClick={onOpen} className="block w-full p-5 text-left">
+        <div className="mb-4 inline-flex rounded-2xl bg-blue-100 p-3 text-blue-700">
+          <FolderOpen className="h-6 w-6" />
+        </div>
+        <div className="pr-10 text-base font-medium text-slate-900">{folder.name}</div>
+        <div className="mt-1 text-sm text-slate-500">路径：{pathLabel}</div>
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+        className="absolute right-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-rose-200 bg-white text-rose-500 shadow-sm transition sm:opacity-0 sm:group-hover:opacity-100 hover:bg-rose-50"
+        aria-label={`删除文件夹 ${folder.name}`}
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
+interface ActionDialogProps {
+  title: string;
+  message: string;
+  tone?: 'default' | 'danger';
+  confirmText?: string;
+  cancelText?: string;
+  showCancel?: boolean;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}
+
+function ActionDialog({
+  title,
+  message,
+  tone = 'default',
+  confirmText = '确认',
+  cancelText = '取消',
+  showCancel = true,
+  onClose,
+  onConfirm,
+}: ActionDialogProps) {
+  const messageLines = message
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" onClick={onClose}>
+      <div
+        className="w-full max-w-md rounded-3xl bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-slate-200 px-6 py-5">
+          <div className="text-lg font-semibold text-slate-900">{title}</div>
+        </div>
+        <div className="space-y-3 px-6 py-6">
+          {messageLines.map((line, index) => (
+            <p key={`${title}-${index}`} className="text-sm leading-6 text-slate-600">
+              {line}
+            </p>
+          ))}
+        </div>
+        <div className="flex justify-end gap-3 border-t border-slate-200 px-6 py-4">
+          {showCancel && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              {cancelText}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void onConfirm()}
+            className={`rounded-xl px-4 py-2 text-sm font-medium text-white ${
+              tone === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
+            }`}
+          >
+            {confirmText}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

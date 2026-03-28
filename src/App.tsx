@@ -374,7 +374,7 @@ function App() {
 
   const ensureDefaultNotesFolderId = async (): Promise<string | null> => {
     const latestTree = await documentService.getTree();
-    const existingFolderId = findDefaultNotesFolderId(latestTree);
+    const existingFolderId = findDefaultNotesFolderId(filterDocTreeByWorkspace(latestTree, null));
     if (existingFolderId) return existingFolderId;
 
     const createdFolder = await documentService.create({
@@ -426,26 +426,28 @@ function App() {
 
   const handleCreateDoc = async (parentId: string | null = null) => {
     const latestTree = await documentService.getTree();
-    const suggestedParentId = activeWorkspaceTeam ? parentId : parentId ?? findDefaultNotesFolderId(latestTree);
-    const suggestedName = suggestedParentId
-      ? getAutoName(latestTree, suggestedParentId, 'file', '新建笔记')
-      : '新建笔记';
+    const scopedTree = filterDocTreeByWorkspace(latestTree, activeWorkspaceTeam?.id ?? null);
+    const suggestedParentId = activeWorkspaceTeam ? parentId : parentId ?? findDefaultNotesFolderId(scopedTree);
+    const scopedSuggestedName = suggestedParentId
+      ? getAutoName(scopedTree, suggestedParentId, 'file', '\u65b0\u5efa\u7b14\u8bb0')
+      : '\u65b0\u5efa\u7b14\u8bb0';
 
     setNameDialog({
       mode: 'create_doc',
-      value: suggestedName,
-      fallbackValue: suggestedName,
+      value: scopedSuggestedName,
+      fallbackValue: scopedSuggestedName,
       parentId,
     });
   };
 
   const handleCreateFolder = async (parentId: string | null = null) => {
     const latestTree = await documentService.getTree();
-    const suggestedName = getAutoName(latestTree, parentId, 'folder', '新建文件夹');
+    const scopedTree = filterDocTreeByWorkspace(latestTree, activeWorkspaceTeam?.id ?? null);
+    const scopedSuggestedFolderName = getAutoName(scopedTree, parentId, 'folder', '\u65b0\u5efa\u6587\u4ef6\u5939');
     setNameDialog({
       mode: 'create_folder',
-      value: suggestedName,
-      fallbackValue: suggestedName,
+      value: scopedSuggestedFolderName,
+      fallbackValue: scopedSuggestedFolderName,
       parentId,
     });
   };
