@@ -7,15 +7,15 @@ import Login from './components/Login';
 import CommentSection from './components/CommentSection';
 import TodoList from './components/TodoList';
 import NameInputModal from './components/NameInputModal';
-import PublicLibrary from './components/PublicLibraryManagerPanel';
-import ResourceShareModal from './components/ResourceShareModal';
+import ShareCenterPanel from './components/ShareCenterPanel';
+import { ResourceShareModal } from './components/ResourceShareModal';
 import TeamWorkspace from './components/TeamWorkspacePanel';
 import FavoritesPanel from './components/FavoritesPanel';
 import { authService } from './lib/authApi';
 import { teamService } from './lib/databaseApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
-import type { User, Document, Team, PublicDocumentSummary, PublicFileSummary, FileRecord } from './lib/types';
+import type { User, Document, Team, FileRecord } from './lib/types';
 import { useSearchParams } from 'react-router-dom';
 import './App.css';
 
@@ -746,30 +746,6 @@ function App() {
     }
   };
 
-  const handleEditPublicDocument = useCallback(async (document: PublicDocumentSummary) => {
-    const targetTeamId = document.team_id ?? null;
-    if (targetTeamId) {
-      const team = await teamService.getById(targetTeamId);
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('team', targetTeamId);
-        return next;
-      });
-      setActiveWorkspaceTeam(team);
-    } else {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.delete('team');
-        return next;
-      });
-      setActiveWorkspaceTeam(null);
-    }
-    setPendingPreviewFileId(null);
-    setActiveTab('docs');
-    setShowFileManager(false);
-    await openDocumentById(document.id);
-  }, [openDocumentById, setSearchParams]);
-
   const handleOpenFileRecord = useCallback(async (file: Pick<FileRecord, 'id' | 'team_id'>) => {
     const targetTeamId = file.team_id ?? null;
     if (targetTeamId) {
@@ -796,16 +772,14 @@ function App() {
     setShowFileManager(true);
   }, [setSearchParams]);
 
-  const handleOpenPublicFile = useCallback(async (file: PublicFileSummary) => {
-    await handleOpenFileRecord(file);
-  }, [handleOpenFileRecord]);
-
   const headerTitle = showFileManager
     ? '文件管理'
     : activeTab === 'teams'
       ? '团队空间'
       : activeTab === 'public'
-        ? '公开资源'
+        ? activeWorkspaceTeam
+          ? '空间分享'
+          : '分享记录'
         : selectedDoc
           ? docTitle
           : '开始';
@@ -816,7 +790,9 @@ function App() {
       : activeTab === 'star'
         ? '收藏'
         : activeTab === 'public'
-          ? '公开资源'
+          ? activeWorkspaceTeam
+            ? '空间分享'
+            : '分享记录'
           : selectedDoc
             ? docTitle
             : '开始';
@@ -902,10 +878,10 @@ function App() {
               onEnterTeamSpace={handleEnterTeamSpace}
             />
           ) : activeTab === 'public' ? (
-            <PublicLibrary
+            <ShareCenterPanel
               currentUserId={user.id}
-              onEditDocument={handleEditPublicDocument}
-              onOpenFile={handleOpenPublicFile}
+              currentWorkspaceTeamId={activeWorkspaceTeam?.id ?? null}
+              workspaceLabel={activeWorkspaceTeam?.name ?? '个人空间'}
             />
           ) : activeTab === 'star' ? (
             <FavoritesPanel

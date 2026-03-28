@@ -59,7 +59,7 @@ const shortcutItems = [
   { key: 'docs', label: '开始', icon: Home },
   { key: 'files', label: '文件', icon: HardDrive },
   { key: 'star', label: '收藏', icon: Star },
-  { key: 'public', label: '公开', icon: Globe },
+  { key: 'public', label: '分享', icon: Globe },
 ] as const;
 
 interface PublicShareFeedItem {
@@ -146,12 +146,7 @@ export default function WorkspaceSidebar({
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const publicShareItems = useMemo<PublicShareFeedItem[]>(() => {
-    if (!user) {
-      return [];
-    }
-
-    const ownedDocuments = publicDocuments
-      .filter((document) => document.user_id === user.id)
+    const workspaceDocuments = publicDocuments
       .map((document) => ({
         id: `document:${document.id}`,
         title: document.title,
@@ -160,8 +155,7 @@ export default function WorkspaceSidebar({
         updatedAt: document.updated_at,
       }));
 
-    const ownedFiles = publicFiles
-      .filter((file) => file.user_id === user.id)
+    const workspaceFiles = publicFiles
       .map((file) => ({
         id: `file:${file.id}`,
         title: file.name,
@@ -170,10 +164,9 @@ export default function WorkspaceSidebar({
         updatedAt: file.updated_at,
       }));
 
-    return [...ownedDocuments, ...ownedFiles]
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-      .slice(0, 6);
-  }, [publicDocuments, publicFiles, user]);
+    return [...workspaceDocuments, ...workspaceFiles]
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }, [publicDocuments, publicFiles]);
 
   const systemNotifications = useMemo(() => {
     const items: Array<{ id: string; title: string; detail: string }> = [];
@@ -182,7 +175,7 @@ export default function WorkspaceSidebar({
       items.push({
         id: 'workspace-active',
         title: `当前空间：${activeWorkspaceTeam.name}`,
-        detail: '你可以继续在当前空间中编辑内容，或在这里处理邀请与公开动态。',
+        detail: '你可以继续在当前空间中编辑内容，或在这里处理邀请与空间分享动态。',
       });
     } else {
       items.push({
@@ -208,12 +201,12 @@ export default function WorkspaceSidebar({
       id: 'public-summary',
       title:
         publicShareItems.length > 0
-          ? `${publicShareItems.length} 个公开资源正在展示`
-          : '当前没有公开分享资源',
+          ? `当前空间有 ${publicShareItems.length} 个分享资源`
+          : '当前空间还没有分享资源',
       detail:
         publicShareItems.length > 0
-          ? '公开笔记和文件会持续通过分享链接对外可见。'
-          : '将笔记或文件设为公开后，会自动汇总到这里。',
+          ? '这些资源已经分享到当前空间，空间成员都可以查看。'
+          : '将笔记或文件分享到当前空间后，会自动汇总到这里。',
     });
 
     return items;
@@ -351,8 +344,8 @@ export default function WorkspaceSidebar({
       setNotificationError('');
       const [invitationResult, documentResult, fileResult] = await Promise.allSettled([
         teamService.getMyInvitations(),
-        publicResourceService.getDocuments(),
-        publicResourceService.getFiles(),
+        publicResourceService.getDocuments(activeWorkspaceTeam?.id ?? null),
+        publicResourceService.getFiles(activeWorkspaceTeam?.id ?? null),
       ]);
 
       const errors: string[] = [];
@@ -368,14 +361,14 @@ export default function WorkspaceSidebar({
         setPublicDocuments(documentResult.value);
       } else {
         setPublicDocuments([]);
-        errors.push(documentResult.reason instanceof Error ? documentResult.reason.message : '公开笔记加载失败');
+        errors.push(documentResult.reason instanceof Error ? documentResult.reason.message : '空间分享笔记加载失败');
       }
 
       if (fileResult.status === 'fulfilled') {
         setPublicFiles(fileResult.value);
       } else {
         setPublicFiles([]);
-        errors.push(fileResult.reason instanceof Error ? fileResult.reason.message : '公开文件加载失败');
+        errors.push(fileResult.reason instanceof Error ? fileResult.reason.message : '空间分享文件加载失败');
       }
 
       if (errors.length > 0) {
@@ -400,7 +393,7 @@ export default function WorkspaceSidebar({
     }
 
     void loadNotificationFeed();
-  }, [user?.id]);
+  }, [user?.id, activeWorkspaceTeam?.id]);
 
   useEffect(() => {
     setWorkspaceMenuOpen(false);
@@ -614,7 +607,7 @@ export default function WorkspaceSidebar({
       window.setTimeout(() => setCopiedNotificationKey(''), 1800);
     } catch {
       setCopiedNotificationKey('');
-      setNotificationError('复制公开链接失败');
+      setNotificationError('复制分享链接失败');
     }
   };
 
@@ -630,7 +623,7 @@ export default function WorkspaceSidebar({
 
   return (
     <>
-      <aside className="flex h-full min-h-0 w-[244px] min-w-[244px] shrink-0 flex-col overflow-visible border-r border-slate-200 bg-[#f7f5f1] lg:w-[256px] lg:min-w-[256px]">
+      <aside className="relative flex h-full min-h-0 w-[244px] min-w-[244px] shrink-0 flex-col overflow-visible border-r border-slate-200 bg-[#f7f5f1] lg:w-[256px] lg:min-w-[256px]">
         <div className="border-b border-slate-200 px-3 py-3">
           <div className="flex items-center gap-2">
             <div ref={workspaceMenuRef} className="relative flex-1">
@@ -839,7 +832,7 @@ export default function WorkspaceSidebar({
                       <div>
                         <div className="text-sm font-semibold text-slate-900">消息中心</div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {`空间邀请 ${pendingInvitations.length} 条，公开资源 ${publicShareItems.length} 个`}
+                          {`空间邀请 ${pendingInvitations.length} 条，空间分享 ${publicShareItems.length} 个`}
                         </div>
                       </div>
                       <button
@@ -900,9 +893,9 @@ export default function WorkspaceSidebar({
                   <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <div className="text-sm font-semibold text-slate-900">公开分享</div>
+                        <div className="text-sm font-semibold text-slate-900">空间分享</div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {publicShareItems.length > 0 ? `最近公开 ${publicShareItems.length} 个资源` : '当前没有公开资源'}
+                          {publicShareItems.length > 0 ? `当前空间分享了 ${publicShareItems.length} 个资源` : '当前空间没有分享资源'}
                         </div>
                       </div>
                       <button
@@ -910,14 +903,14 @@ export default function WorkspaceSidebar({
                         onClick={openPublicTab}
                         className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-600 transition hover:bg-slate-50"
                       >
-                        打开公开页
+                        打开分享页
                       </button>
                     </div>
 
                     <div className="mt-3 space-y-2">
                       {publicShareItems.length === 0 ? (
                         <div className="rounded-2xl bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">
-                          还没有公开分享的笔记或文件
+                          当前空间还没有分享的笔记或文件
                         </div>
                       ) : (
                         publicShareItems.map((item) => {
@@ -928,7 +921,7 @@ export default function WorkspaceSidebar({
                                 <div className="min-w-0">
                                   <div className="truncate text-sm font-semibold text-slate-900">{item.title}</div>
                                   <div className="mt-1 text-xs text-slate-500">
-                                    {item.kind === 'document' ? '公开笔记' : '公开文件'}
+                                    {item.kind === 'document' ? '分享笔记' : '分享文件'}
                                   </div>
                                   <div className="mt-1 text-xs text-slate-400">
                                     更新时间：{new Date(item.updatedAt).toLocaleString('zh-CN')}
@@ -1233,6 +1226,7 @@ export default function WorkspaceSidebar({
             </button>
           </div>
         )}
+
       </aside>
 
       <NameInputModal

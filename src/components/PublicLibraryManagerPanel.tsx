@@ -6,6 +6,8 @@ import type { PublicDocumentSummary, PublicFileSummary } from '../lib/types';
 
 interface PublicLibraryManagerPanelProps {
   currentUserId?: string | null;
+  currentWorkspaceTeamId?: string | null;
+  workspaceLabel?: string;
   onEditDocument?: (document: PublicDocumentSummary) => void;
   onOpenFile?: (file: PublicFileSummary) => void;
 }
@@ -28,6 +30,8 @@ function dedupeById<T extends { id: string }>(items: T[]) {
 
 export default function PublicLibraryManagerPanel({
   currentUserId = null,
+  currentWorkspaceTeamId = null,
+  workspaceLabel,
   onEditDocument,
   onOpenFile,
 }: PublicLibraryManagerPanelProps) {
@@ -40,6 +44,7 @@ export default function PublicLibraryManagerPanel({
 
   const visibleDocuments = useMemo(() => dedupeById(documents), [documents]);
   const visibleFiles = useMemo(() => dedupeById(files), [files]);
+  const activeWorkspaceLabel = workspaceLabel || (currentWorkspaceTeamId ? '当前团队空间' : '个人空间');
 
   const load = async () => {
     setIsLoading(true);
@@ -47,14 +52,14 @@ export default function PublicLibraryManagerPanel({
 
     try {
       const [docRows, fileRows] = await Promise.all([
-        publicResourceService.getDocuments(),
-        publicResourceService.getFiles(),
+        publicResourceService.getDocuments(currentWorkspaceTeamId),
+        publicResourceService.getFiles(currentWorkspaceTeamId),
       ]);
 
       setDocuments(docRows);
       setFiles(fileRows);
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : '公开资源加载失败');
+      setError(loadError instanceof Error ? loadError.message : '空间分享加载失败');
       setDocuments([]);
       setFiles([]);
     } finally {
@@ -64,7 +69,7 @@ export default function PublicLibraryManagerPanel({
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [currentWorkspaceTeamId]);
 
   const copyLink = async (token: string, key: string) => {
     try {
@@ -86,11 +91,14 @@ export default function PublicLibraryManagerPanel({
         ? await shareService.listByDocument(resourceId)
         : await shareService.listByFile(resourceId);
 
-      const publicLinks = links.filter((link) => link.visibility === 'public');
-      const results = await Promise.all(publicLinks.map((link) => shareService.deleteShareLink(link.id)));
+      const currentSpaceLinks = links.filter((link) => {
+        const isSpaceShare = link.visibility === 'space' || link.visibility === 'team';
+        return isSpaceShare && (link.team_id || null) === currentWorkspaceTeamId;
+      });
+      const results = await Promise.all(currentSpaceLinks.map((link) => shareService.deleteShareLink(link.id)));
 
       if (results.some((item) => !item)) {
-        setError('取消公开失败，请稍后重试');
+        setError('移出空间分享失败，请稍后重试');
         return;
       }
 
@@ -114,9 +122,11 @@ export default function PublicLibraryManagerPanel({
                 <Globe className="h-6 w-6" />
               </div>
               <div>
-                <div className="text-2xl font-semibold text-slate-900">公开资源</div>
+                <div className="text-2xl font-semibold text-slate-900">空间分享</div>
                 <div className="mt-1 text-sm text-slate-500">
-                  这里展示所有已公开的笔记和文件。资源所有者可以继续编辑、复制链接或取消公开。
+                  {currentWorkspaceTeamId
+                    ? `这里只展示“${activeWorkspaceLabel}”中的空间分享资源。资源所有者可以继续编辑、复制链接或移出当前空间。`
+                    : '空间分享只会出现在具体空间内。进入一个空间后，这里会显示分享到该空间的笔记和文件。'}
                 </div>
               </div>
             </div>
@@ -140,19 +150,19 @@ export default function PublicLibraryManagerPanel({
 
         {isLoading ? (
           <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-20 text-center text-sm text-slate-500 shadow-sm">
-            正在加载公开资源...
+            正在加载空间分享...
           </div>
         ) : (
           <div className="grid gap-6 xl:grid-cols-2">
             <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <FileText className="h-4 w-4 text-blue-600" />
-                公开笔记
+                空间分享笔记
               </div>
 
               {visibleDocuments.length === 0 ? (
                 <div className="rounded-2xl bg-slate-50 px-4 py-12 text-center text-sm text-slate-500">
-                  暂无公开笔记
+                  当前空间还没有分享笔记
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -221,7 +231,7 @@ export default function PublicLibraryManagerPanel({
                               className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 hover:bg-rose-100 disabled:opacity-60"
                             >
                               <Trash2 className="h-4 w-4" />
-                              {busyKey === actionKey ? '处理中...' : '取消公开'}
+                              {busyKey === actionKey ? '处理中...' : '移出空间'}
                             </button>
                           )}
                         </div>
@@ -235,12 +245,12 @@ export default function PublicLibraryManagerPanel({
             <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <Image className="h-4 w-4 text-emerald-600" />
-                公开文件
+                空间分享文件
               </div>
 
               {visibleFiles.length === 0 ? (
                 <div className="rounded-2xl bg-slate-50 px-4 py-12 text-center text-sm text-slate-500">
-                  暂无公开文件
+                  当前空间还没有分享文件
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -324,7 +334,7 @@ export default function PublicLibraryManagerPanel({
                               className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 hover:bg-rose-100 disabled:opacity-60"
                             >
                               <Trash2 className="h-4 w-4" />
-                              {busyKey === actionKey ? '处理中...' : '取消公开'}
+                              {busyKey === actionKey ? '处理中...' : '移出空间'}
                             </button>
                           )}
                         </div>

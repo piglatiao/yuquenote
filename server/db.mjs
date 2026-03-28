@@ -224,6 +224,31 @@ export function resourcePermissionRowToModel(row) {
   };
 }
 
+export function normalizeShareVisibility(value) {
+  if (value === 'team') return 'space';
+  if (value === 'public') return 'link';
+  return value;
+}
+
+export function shareLinkRowToModel(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    document_id: row.document_id ?? null,
+    file_id: row.file_id ?? null,
+    team_id: row.team_id ?? null,
+    share_token: row.share_token,
+    visibility: normalizeShareVisibility(row.visibility),
+    expires_at: row.expires_at ?? null,
+    created_at: row.created_at,
+    user_id: row.user_id ?? null,
+    has_password: Boolean(row.password_hash),
+  };
+}
+
 export function getFileType(filename, mimeType = '') {
   const ext = path.extname(filename).toLowerCase();
   if (mimeType.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(ext)) {
@@ -433,6 +458,7 @@ ensureColumn('files', 'team_id', 'TEXT');
 ensureColumn('files', 'is_starred', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('folders', 'team_id', 'TEXT');
 ensureColumn('share_links', 'team_id', 'TEXT');
+ensureColumn('share_links', 'password_hash', 'TEXT');
 ensureColumn('teams', 'avatar_url', 'TEXT');
 ensureColumn('teams', 'member_limit', 'INTEGER DEFAULT 10');
 
@@ -564,7 +590,7 @@ export function listShareLinks(documentId) {
   const rows = documentId
     ? db.prepare('SELECT * FROM share_links WHERE document_id = ? ORDER BY created_at DESC').all(documentId)
     : db.prepare('SELECT * FROM share_links ORDER BY created_at DESC').all();
-  return rows;
+  return rows.map(shareLinkRowToModel);
 }
 
 export function getFileById(id) {
@@ -572,10 +598,18 @@ export function getFileById(id) {
 }
 
 export function getShareLinkByToken(token) {
-  return db.prepare('SELECT * FROM share_links WHERE share_token = ?').get(token) || null;
+  return shareLinkRowToModel(db.prepare('SELECT * FROM share_links WHERE share_token = ?').get(token));
 }
 
 export function getShareLinkById(id) {
+  return shareLinkRowToModel(db.prepare('SELECT * FROM share_links WHERE id = ?').get(id));
+}
+
+export function getShareLinkRowByToken(token) {
+  return db.prepare('SELECT * FROM share_links WHERE share_token = ?').get(token) || null;
+}
+
+export function getShareLinkRowById(id) {
   return db.prepare('SELECT * FROM share_links WHERE id = ?').get(id) || null;
 }
 
@@ -800,32 +834,81 @@ export function getResourcePermission(teamId, resourceType, resourceId, memberUs
   return row ? resourcePermissionRowToModel(row) : null;
 }
 
-export function listPublicDocuments() {
+export function listPublicDocuments(teamId = null) {
+  if (!teamId) {
+    return [];
+  }
+
   const rows = db.prepare(`
-    SELECT d.*, sl.share_token
+    SELECT
+      d.*,
+      sl.id AS share_link_id,
+      sl.share_token,
+      sl.user_id AS share_user_id,
+      sl.team_id AS shared_team_id,
+      sl.created_at AS share_created_at,
+      sl.visibility AS share_visibility,
+      sl.password_hash,
+      t.name AS shared_team_name
     FROM documents d
     INNER JOIN share_links sl ON sl.document_id = d.id
-    WHERE sl.visibility = 'public' AND d.is_deleted = 0
-    ORDER BY d.updated_at DESC
-  `).all();
+    LEFT JOIN teams t ON t.id = sl.team_id
+    WHERE sl.visibility IN ('space', 'team') AND d.is_deleted = 0 AND sl.team_id = ?
+    ORDER BY sl.created_at DESC, d.updated_at DESC
+  `).all(teamId);
 
   return rows.map((row) => ({
     ...documentRowToModel(row),
+    share_link_id: row.share_link_id,
     share_token: row.share_token,
+    share_user_id: sanitizeNullable(row.share_user_id),
+    share_created_at: row.share_created_at,
+    shared_team_id: sanitizeNullable(row.shared_team_id),
+    shared_team_name: sanitizeNullable(row.shared_team_name),
+    share_visibility: normalizeShareVisibility(row.share_visibility),
+    has_password: Boolean(row.password_hash),
   }));
 }
 
-export function listPublicFiles() {
+export function listPublicFiles(teamId = null) {
+  if (!teamId) {
+    return [];
+  }
+
   const rows = db.prepare(`
-    SELECT f.*, sl.share_token
+    SELECT
+      f.*,
+      sl.id AS share_link_id,
+      sl.share_token,
+      sl.user_id AS share_user_id,
+      sl.team_id AS shared_team_id,
+      sl.created_at AS share_created_at,
+      sl.visibility AS share_visibility,
+      sl.password_hash,
+      t.name AS shared_team_name
     FROM files f
     INNER JOIN share_links sl ON sl.file_id = f.id
-    WHERE sl.visibility = 'public'
-    ORDER BY f.updated_at DESC
-  `).all();
+    LEFT JOIN teams t ON t.id = sl.team_id
+    WHERE sl.visibility IN ('space', 'team') AND sl.team_id = ?
+    ORDER BY sl.created_at DESC, f.updated_at DESC
+  `).all(teamId);
 
   return rows
-    .map(fileRowToModel)
+    .map((row) => {
+      const file = fileRowToModel(row);
+      if (!file) return null;
+      return {
+        ...file,
+        share_link_id: row.share_link_id,
+        share_token: row.share_token,
+        share_user_id: sanitizeNullable(row.share_user_id),
+        share_created_at: row.share_created_at,
+        shared_team_id: sanitizeNullable(row.shared_team_id),
+        shared_team_name: sanitizeNullable(row.shared_team_name),
+        share_visibility: normalizeShareVisibility(row.share_visibility),
+        has_password: Boolean(row.password_hash),
+      };
+    })
     .filter(Boolean);
 }
 

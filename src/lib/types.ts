@@ -111,10 +111,11 @@ export interface ShareLink {
   file_id: string | null;
   team_id?: string | null;
   share_token: string;
-  visibility: 'private' | 'team' | 'public';
+  visibility: 'private' | 'space' | 'link' | 'team' | 'public';
   expires_at: string | null;
   created_at: string;
   user_id: string | null;
+  has_password?: boolean;
 }
 
 export interface SharedResourcePayload {
@@ -126,10 +127,24 @@ export interface SharedResourcePayload {
 
 export interface PublicDocumentSummary extends Document {
   share_token: string;
+  share_link_id?: string;
+  share_user_id?: string | null;
+  share_created_at?: string;
+  shared_team_id?: string | null;
+  shared_team_name?: string | null;
+  share_visibility?: ShareLink['visibility'];
+  has_password?: boolean;
 }
 
 export interface PublicFileSummary extends FileRecord {
   share_token: string;
+  share_link_id?: string;
+  share_user_id?: string | null;
+  share_created_at?: string;
+  shared_team_id?: string | null;
+  shared_team_name?: string | null;
+  share_visibility?: ShareLink['visibility'];
+  has_password?: boolean;
 }
 
 export interface Comment {

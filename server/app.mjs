@@ -20,7 +20,10 @@ import {
   getFileType,
   getNextOrderIndex,
   getResourcePermission,
+  getShareLinkById,
   getShareLinkByToken,
+  getShareLinkRowById,
+  getShareLinkRowByToken,
   getTeamById,
   getTeamInvitationById,
   getTeamMembership,
@@ -42,11 +45,13 @@ import {
   listTodos,
   mimeTypeForExtension,
   newId,
+  normalizeShareVisibility,
   now,
   publicUser,
   getPendingTeamInvitationByCode,
   searchInvitableUsers,
   sanitizeNullable,
+  shareLinkRowToModel,
   todoRowToModel,
   verifyPassword,
 } from './db.mjs';
@@ -276,6 +281,38 @@ function ensureTeamOwner(res, userId, teamId) {
   return true;
 }
 
+function canShareResourceToSpace(userId, resource, targetTeamId) {
+  if (!userId || !resource || !targetTeamId) {
+    return false;
+  }
+
+  const resourceTeamId = sanitizeNullable(resource.team_id);
+  if (resourceTeamId) {
+    return isApprovedTeamMember(userId, targetTeamId);
+  }
+
+  return isTeamOwner(userId, targetTeamId);
+}
+
+function canCreateShareLink(userId, resourceType, resource, visibility) {
+  if (!userId || !resource) {
+    return false;
+  }
+
+  if (resource.user_id === userId) {
+    return true;
+  }
+
+  const resourceTeamId = sanitizeNullable(resource.team_id);
+  if (!resourceTeamId || visibility !== 'space') {
+    return false;
+  }
+
+  return resourceType === 'document'
+    ? canViewDocument(userId, resource)
+    : canViewFile(userId, resource);
+}
+
 function resolveSharePayload(link) {
   if (!link) return null;
   if (link.document_id) {
@@ -293,7 +330,7 @@ function resolveSharePayload(link) {
   return null;
 }
 
-function canAccessShareLink(userId, link, payload) {
+function canAccessShareLink(userId, link, payload, providedPassword = null) {
   if (!link || !payload?.resource) {
     return { allowed: false, status: 404, message: 'Shared resource not found.' };
   }
@@ -302,7 +339,20 @@ function canAccessShareLink(userId, link, payload) {
     return { allowed: false, status: 410, message: 'Share link has expired.' };
   }
 
-  if (link.visibility === 'public') {
+  const visibility = normalizeShareVisibility(link.visibility);
+
+  if (link.password_hash) {
+    const password = typeof providedPassword === 'string' ? providedPassword : '';
+    if (!password) {
+      return { allowed: false, status: 428, message: 'This share link requires a password.' };
+    }
+
+    if (!verifyPassword(password, link.password_hash)) {
+      return { allowed: false, status: 403, message: 'The share password is incorrect.' };
+    }
+  }
+
+  if (visibility === 'link') {
     return { allowed: true };
   }
 
@@ -310,27 +360,20 @@ function canAccessShareLink(userId, link, payload) {
     return { allowed: false, status: 401, message: 'Please log in first.' };
   }
 
-  if (link.visibility === 'private') {
+  if (visibility === 'private') {
     const ownerId = payload.resource.user_id;
     return ownerId === userId
       ? { allowed: true }
       : { allowed: false, status: 403, message: 'You do not have access to this private resource.' };
   }
 
-  if (link.visibility === 'team') {
+  if (visibility === 'space') {
     const teamId = sanitizeNullable(link.team_id) || sanitizeNullable(payload.resource.team_id);
     if (!teamId || !isApprovedTeamMember(userId, teamId)) {
-      return { allowed: false, status: 403, message: 'You are not a member of this team.' };
+      return { allowed: false, status: 403, message: 'You are not a member of this workspace.' };
     }
 
-    const allowed =
-      payload.type === 'document'
-        ? canViewDocument(userId, payload.resource)
-        : canViewFile(userId, payload.resource);
-
-    return allowed
-      ? { allowed: true }
-      : { allowed: false, status: 403, message: 'You do not have permission to view this shared resource.' };
+    return { allowed: true };
   }
 
   return { allowed: false, status: 403, message: 'Share visibility is invalid.' };
@@ -1086,12 +1129,30 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/public/documents') {
-    json(res, 200, listPublicDocuments());
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const requestedTeamId = normalizeRequestedTeamId(url.searchParams.get('teamId'));
+    if (requestedTeamId && !isTeamOwner(currentUser.id, requestedTeamId) && !isApprovedTeamMember(currentUser.id, requestedTeamId)) {
+      json(res, 403, { error: 'You do not have access to this workspace.' });
+      return;
+    }
+
+    json(res, 200, listPublicDocuments(requestedTeamId));
     return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/public/files') {
-    json(res, 200, listPublicFiles());
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const requestedTeamId = normalizeRequestedTeamId(url.searchParams.get('teamId'));
+    if (requestedTeamId && !isTeamOwner(currentUser.id, requestedTeamId) && !isApprovedTeamMember(currentUser.id, requestedTeamId)) {
+      json(res, 403, { error: 'You do not have access to this workspace.' });
+      return;
+    }
+
+    json(res, 200, listPublicFiles(requestedTeamId));
     return;
   }
 
@@ -1936,20 +1997,10 @@ async function handleApi(req, res, url) {
     let rows = listShareLinks(documentId);
 
     if (fileId) {
-      rows = db.prepare('SELECT * FROM share_links WHERE file_id = ? ORDER BY created_at DESC').all(fileId);
+      rows = db.prepare('SELECT * FROM share_links WHERE file_id = ? ORDER BY created_at DESC').all(fileId).map(shareLinkRowToModel);
     }
 
-    const filtered = rows.filter((row) => {
-      if (row.document_id) {
-        const document = getDocumentById(row.document_id);
-        return Boolean(document && document.user_id === currentUser.id);
-      }
-      if (row.file_id) {
-        const file = getFileById(row.file_id);
-        return Boolean(file && file.user_id === currentUser.id);
-      }
-      return false;
-    });
+    const filtered = rows.filter((row) => row.user_id === currentUser.id);
 
     json(res, 200, filtered);
     return;
@@ -1961,12 +2012,11 @@ async function handleApi(req, res, url) {
 
     const body = await readJsonBody(req);
     const timestamp = now();
-    const id = newId();
-    const shareToken = newId().replace(/-/g, '');
     const documentId = sanitizeNullable(body.document_id);
     const fileId = sanitizeNullable(body.file_id);
-    const visibility = body.visibility || 'private';
+    const visibility = normalizeShareVisibility(body.visibility || 'link');
     const requestedTeamId = sanitizeNullable(body.team_id);
+    const password = String(body.password || '').trim();
 
     if (!documentId && !fileId) {
       json(res, 400, { error: 'document_id or file_id is required.' });
@@ -1978,7 +2028,7 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (!['private', 'team', 'public'].includes(visibility)) {
+    if (!['private', 'space', 'link'].includes(visibility)) {
       json(res, 400, { error: 'Share visibility is invalid.' });
       return;
     }
@@ -1990,33 +2040,51 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (resource.user_id !== currentUser.id) {
-      json(res, 403, { error: 'Only the resource owner can create share links.' });
+    if (!canCreateShareLink(currentUser.id, resourceType, resource, visibility)) {
+      json(res, 403, { error: 'You do not have permission to create this share.' });
       return;
     }
 
-    let teamId = requestedTeamId || sanitizeNullable(resource.team_id);
+    let teamId = null;
 
-    if (visibility === 'team') {
+    if (visibility === 'space') {
+      teamId = requestedTeamId;
       if (!teamId) {
-        json(res, 400, { error: 'A team must be selected for team sharing.' });
+        json(res, 400, { error: 'A workspace must be selected for space sharing.' });
         return;
       }
 
-      if (!isTeamOwner(currentUser.id, teamId)) {
-        json(res, 403, { error: 'Only the team owner can share resources to this team.' });
+      if (!canShareResourceToSpace(currentUser.id, resource, teamId)) {
+        json(res, 403, { error: 'You cannot share this resource to the selected workspace.' });
         return;
       }
 
-      if (sanitizeNullable(resource.team_id) !== teamId) {
-        const tableName = resourceType === 'document' ? 'documents' : 'files';
-        db.prepare(`UPDATE ${tableName} SET team_id = ?, updated_at = ? WHERE id = ?`).run(teamId, timestamp, resource.id);
+      const existingSpaceShare = documentId
+        ? db.prepare(`
+            SELECT * FROM share_links
+            WHERE document_id = ? AND team_id = ? AND user_id = ? AND visibility IN ('space', 'team')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `).get(documentId, teamId, currentUser.id)
+        : db.prepare(`
+            SELECT * FROM share_links
+            WHERE file_id = ? AND team_id = ? AND user_id = ? AND visibility IN ('space', 'team')
+            ORDER BY created_at DESC
+            LIMIT 1
+          `).get(fileId, teamId, currentUser.id);
+
+      if (existingSpaceShare) {
+        json(res, 200, shareLinkRowToModel(existingSpaceShare));
+        return;
       }
     }
 
+    const id = newId();
+    const shareToken = newId().replace(/-/g, '');
+
     db.prepare(`
-      INSERT INTO share_links (id, document_id, file_id, team_id, share_token, visibility, expires_at, created_at, user_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO share_links (id, document_id, file_id, team_id, share_token, visibility, expires_at, created_at, user_id, password_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       documentId,
@@ -2027,9 +2095,10 @@ async function handleApi(req, res, url) {
       sanitizeNullable(body.expires_at),
       timestamp,
       currentUser.id,
+      visibility === 'link' && password ? hashPassword(password) : null,
     );
 
-    json(res, 201, db.prepare('SELECT * FROM share_links WHERE id = ?').get(id));
+    json(res, 201, getShareLinkById(id));
     return;
   }
 
@@ -2041,32 +2110,27 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    const payload = resolveSharePayload(link);
-    const access = canAccessShareLink(getCurrentUserId(req), link, payload);
-    if (!access.allowed) {
-      json(res, access.status, { error: access.message });
-      return;
-    }
-
     json(res, 200, link);
     return;
   }
 
-  if (req.method === 'GET' && /^\/api\/share-links\/token\/[^/]+\/content$/.test(url.pathname)) {
+  if ((req.method === 'GET' || req.method === 'POST') && /^\/api\/share-links\/token\/[^/]+\/content$/.test(url.pathname)) {
     const token = decodeURIComponent(url.pathname.replace('/api/share-links/token/', '').replace('/content', ''));
-    const link = getShareLinkByToken(token);
-    if (!link) {
+    const rawLink = getShareLinkRowByToken(token);
+    if (!rawLink) {
       json(res, 404, { error: 'Share link not found.' });
       return;
     }
 
-    const payload = resolveSharePayload(link);
-    const access = canAccessShareLink(getCurrentUserId(req), link, payload);
+    const body = req.method === 'POST' ? await readJsonBody(req) : null;
+    const payload = resolveSharePayload(rawLink);
+    const access = canAccessShareLink(getCurrentUserId(req), rawLink, payload, sanitizeNullable(body?.password));
     if (!access.allowed) {
       json(res, access.status, { error: access.message });
       return;
     }
 
+    const link = shareLinkRowToModel(rawLink);
     json(res, 200, {
       link,
       document: payload?.type === 'document' ? payload.resource : null,
@@ -2081,15 +2145,15 @@ async function handleApi(req, res, url) {
     if (!currentUser) return;
 
     const id = decodeURIComponent(url.pathname.replace('/api/share-links/', ''));
-    const existing = db.prepare('SELECT * FROM share_links WHERE id = ?').get(id);
+    const existing = getShareLinkRowById(id);
     if (!existing) {
       json(res, 404, { error: 'Share link not found.' });
       return;
     }
 
     const payload = resolveSharePayload(existing);
-    if (!payload?.resource || payload.resource.user_id !== currentUser.id) {
-      json(res, 403, { error: 'Only the resource owner can delete share links.' });
+    if (existing.user_id !== currentUser.id) {
+      json(res, 403, { error: 'Only the share creator can delete this share.' });
       return;
     }
 

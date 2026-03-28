@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { fileService, folderService, storageService } from '../lib';
 import type { FileRecord, Folder } from '../lib';
-import ResourceShareModal from './ResourceShareModal';
+import { ResourceShareModal } from './ResourceShareModal';
 
 type FileType = FileRecord['type'];
 
@@ -1446,7 +1446,17 @@ interface FileRowSectionProps {
   onDelete: (file: FileItem) => void;
 }
 
-function FileRowSection({ title, icon, files, getPath, onOpen, onDownload, onToggleStar, onShare, onDelete }: FileRowSectionProps) {
+function FileRowSection({
+  title,
+  icon,
+  files,
+  getPath,
+  onOpen,
+  onDownload,
+  onToggleStar,
+  onShare,
+  onDelete,
+}: FileRowSectionProps) {
   if (files.length === 0) return null;
 
   return (

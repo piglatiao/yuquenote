@@ -64,25 +64,29 @@ export default function ShareModal({ isOpen, onClose, documentId, documentTitle 
     }
   };
 
-  const getVisibilityIcon = (v: 'private' | 'team' | 'public') => {
+  const getVisibilityIcon = (v: ShareLink['visibility']) => {
     switch (v) {
       case 'private':
         return <Lock className="w-4 h-4" />;
+      case 'space':
       case 'team':
         return <Users className="w-4 h-4" />;
+      case 'link':
       case 'public':
         return <Globe className="w-4 h-4" />;
     }
   };
 
-  const getVisibilityLabel = (v: 'private' | 'team' | 'public') => {
+  const getVisibilityLabel = (v: ShareLink['visibility']) => {
     switch (v) {
       case 'private':
         return '私有';
+      case 'space':
       case 'team':
-        return '团队';
+        return '空间';
+      case 'link':
       case 'public':
-        return '公开';
+        return '链接';
     }
   };
 

@@ -7,8 +7,8 @@ import {
   File,
   FileArchive,
   FileText,
-  Globe,
   Image,
+  Link2,
   Lock,
   Music,
   ShieldAlert,
@@ -32,13 +32,23 @@ const visibilityMeta = {
     className: 'bg-amber-50 text-amber-700',
   },
   team: {
-    label: '团队分享',
+    label: '空间分享',
+    icon: Users,
+    className: 'bg-blue-50 text-blue-700',
+  },
+  space: {
+    label: '空间分享',
     icon: Users,
     className: 'bg-blue-50 text-blue-700',
   },
   public: {
-    label: '公开分享',
-    icon: Globe,
+    label: '分享链接',
+    icon: Link2,
+    className: 'bg-emerald-50 text-emerald-700',
+  },
+  link: {
+    label: '分享链接',
+    icon: Link2,
     className: 'bg-emerald-50 text-emerald-700',
   },
 } as const;
@@ -116,6 +126,10 @@ export default function SharePageAccess() {
   const [file, setFile] = useState<FileRecord | null>(null);
   const [error, setError] = useState<ErrorState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [password, setPassword] = useState('');
+  const [submittedPassword, setSubmittedPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [requiresPassword, setRequiresPassword] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -124,6 +138,7 @@ export default function SharePageAccess() {
       setPayload(null);
       setDocument(null);
       setFile(null);
+      setPasswordError('');
 
       if (!token) {
         setError(buildErrorState(404, '分享链接格式不正确。'));
@@ -132,13 +147,23 @@ export default function SharePageAccess() {
       }
 
       try {
-        const nextPayload = await shareService.getSharedResource(token);
+        const nextPayload = await shareService.getSharedResource(token, submittedPassword || undefined);
         setPayload(nextPayload);
         setDocument(nextPayload.document ?? null);
         setFile(nextPayload.file ?? null);
+        setRequiresPassword(false);
       } catch (loadError) {
         if (loadError instanceof ApiError) {
-          setError(buildErrorState(loadError.status, loadError.message));
+          if (loadError.status === 428 || loadError.message === 'This share link requires a password.') {
+            setRequiresPassword(true);
+            setError(null);
+          } else if (loadError.message === 'The share password is incorrect.') {
+            setRequiresPassword(true);
+            setPasswordError('访问密码错误，请重新输入。');
+            setError(null);
+          } else {
+            setError(buildErrorState(loadError.status, loadError.message));
+          }
         } else if (loadError instanceof Error) {
           setError(buildErrorState(500, loadError.message));
         } else {
@@ -150,7 +175,7 @@ export default function SharePageAccess() {
     };
 
     void load();
-  }, [token]);
+  }, [submittedPassword, token]);
 
   if (isLoading) {
     return (
@@ -182,20 +207,59 @@ export default function SharePageAccess() {
               <ArrowLeft className="h-4 w-4" />
               {error?.status === 401 ? '返回首页登录' : '返回首页'}
             </Link>
-            <Link
-              to="/public"
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              <Globe className="h-4 w-4" />
-              查看公开资源
-            </Link>
           </div>
         </div>
       </div>
     );
   }
 
-  const visibility = visibilityMeta[payload.link.visibility];
+  if (requiresPassword) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
+            <Lock className="h-8 w-8" />
+          </div>
+          <h1 className="text-center text-2xl font-semibold text-slate-900">请输入访问密码</h1>
+          <p className="mt-3 text-center text-sm leading-6 text-slate-500">
+            这条分享链接已经设置密码，输入正确密码后才可以查看内容。
+          </p>
+          <div className="mt-6 space-y-3">
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setPasswordError('');
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  setSubmittedPassword(password.trim());
+                }
+              }}
+              placeholder="输入访问密码"
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+            />
+            {passwordError && (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+                {passwordError}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setSubmittedPassword(password.trim())}
+              disabled={!password.trim()}
+              className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              继续查看
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const visibility = visibilityMeta[payload.link.visibility] || visibilityMeta.link;
   const VisibilityIcon = visibility.icon;
 
   return (

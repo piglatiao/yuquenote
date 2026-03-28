@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, BookOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import PublicLibraryPanel from '../components/PublicLibraryManagerPanel';
+import ShareCenterPanel from '../components/ShareCenterPanel';
 import { authService } from '../lib/authApi';
 
 export default function PublicLibraryStandalone() {
@@ -26,7 +26,7 @@ export default function PublicLibraryStandalone() {
             </div>
             <div>
               <div className="font-semibold text-slate-900">语雀笔记</div>
-              <div className="text-sm text-slate-500">公开资源中心</div>
+              <div className="text-sm text-slate-500">空间分享中心</div>
             </div>
           </div>
           <Link
@@ -38,7 +38,7 @@ export default function PublicLibraryStandalone() {
           </Link>
         </div>
       </header>
-      <PublicLibraryPanel currentUserId={currentUserId} />
+      <ShareCenterPanel currentUserId={currentUserId} currentWorkspaceTeamId={null} workspaceLabel="个人空间" />
     </div>
   );
 }

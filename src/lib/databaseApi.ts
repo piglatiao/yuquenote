@@ -105,11 +105,16 @@ export const fileService = {
 };
 
 export const shareService = {
+  async listMine(): Promise<ShareLink[]> {
+    return apiRequest<ShareLink[]>('/share-links');
+  },
+
   async createShareLink(
     docId?: string,
     fileId?: string,
-    visibility: 'private' | 'team' | 'public' = 'private',
+    visibility: 'private' | 'space' | 'link' | 'team' | 'public' = 'link',
     teamId?: string | null,
+    password?: string | null,
   ): Promise<ShareLink | null> {
     try {
       return await apiRequest<ShareLink>(
@@ -120,6 +125,7 @@ export const shareService = {
             file_id: fileId || null,
             team_id: teamId || null,
             visibility,
+            password: password || null,
           },
           { method: 'POST' },
         ),
@@ -145,8 +151,16 @@ export const shareService = {
     }
   },
 
-  async getSharedResource(shareToken: string): Promise<SharedResourcePayload> {
-    return apiRequest<SharedResourcePayload>(`/share-links/token/${encodeURIComponent(shareToken)}/content`);
+  async getSharedResource(shareToken: string, password?: string): Promise<SharedResourcePayload> {
+    return apiRequest<SharedResourcePayload>(
+      `/share-links/token/${encodeURIComponent(shareToken)}/content`,
+      toJsonRequest(
+        {
+          password: password || null,
+        },
+        { method: 'POST' },
+      ),
+    );
   },
 
   async deleteShareLink(id: string): Promise<boolean> {
@@ -355,11 +369,19 @@ export const resourcePermissionService = {
 };
 
 export const publicResourceService = {
-  async getDocuments(): Promise<PublicDocumentSummary[]> {
-    return apiRequest<PublicDocumentSummary[]>('/public/documents');
+  async getDocuments(teamId?: string | null): Promise<PublicDocumentSummary[]> {
+    const params = new URLSearchParams();
+    if (teamId !== undefined) {
+      params.set('teamId', teamId ?? '__personal__');
+    }
+    return apiRequest<PublicDocumentSummary[]>(`/public/documents${params.size ? `?${params.toString()}` : ''}`);
   },
 
-  async getFiles(): Promise<PublicFileSummary[]> {
-    return apiRequest<PublicFileSummary[]>('/public/files');
+  async getFiles(teamId?: string | null): Promise<PublicFileSummary[]> {
+    const params = new URLSearchParams();
+    if (teamId !== undefined) {
+      params.set('teamId', teamId ?? '__personal__');
+    }
+    return apiRequest<PublicFileSummary[]>(`/public/files${params.size ? `?${params.toString()}` : ''}`);
   },
 };
