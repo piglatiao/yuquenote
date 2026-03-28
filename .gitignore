@@ -7,27 +7,48 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Build / deps
 node_modules
+node_modules/
 dist
+dist/
 dist-ssr
+target/
+build/
+coverage/
+.cache/
 *.local
 
-# Editor directories and files
+# OS / editor
 .vscode/*
 !.vscode/extensions.json
+.vscode/
 .idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Local app data (sqlite + uploaded files)
+# Runtime / local env
+storage/
 data/
 dump.rdb
-
-# Environment files
 .env
 .env.*
 !.env.example
+
+# Git helper / template files user asked to ignore
+.gitmessage
+.gitmessage.txt
+.github/ISSUE_TEMPLATE/
+.github/PULL_REQUEST_TEMPLATE*
+
+# Open-source license files user asked to ignore
+LICENSE
+LICENSE.*
+COPYING
+COPYING.*
