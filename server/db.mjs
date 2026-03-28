@@ -239,6 +239,13 @@ export function getFileType(filename, mimeType = '') {
 export function mimeTypeForExtension(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const map = {
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.map': 'application/json; charset=utf-8',
+    '.ico': 'image/x-icon',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
@@ -257,6 +264,9 @@ export function mimeTypeForExtension(filePath) {
     '.rar': 'application/vnd.rar',
     '.mp3': 'audio/mpeg',
     '.wav': 'audio/wav',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
   };
   return map[ext] || 'application/octet-stream';
 }

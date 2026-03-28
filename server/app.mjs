@@ -7,6 +7,7 @@ import {
   DATA_DIR,
   DB_PATH,
   FILES_DIR,
+  ROOT_DIR,
   hashPassword,
   commentRowToModel,
   db,
@@ -50,7 +51,9 @@ import {
 } from './db.mjs';
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
-const API_PORT = Number(process.env.YUQUE_API_PORT || 3001);
+const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
+const SERVER_HOST = process.env.HOST || process.env.YUQUE_HOST || '0.0.0.0';
+const DIST_DIR = path.resolve(process.env.YUQUE_STATIC_DIR || path.join(ROOT_DIR, 'dist'));
 const RESOURCE_TYPES = new Set(['document', 'file']);
 
 function getCurrentUserId(req) {
@@ -349,6 +352,60 @@ async function handleUploads(res, url) {
     'Access-Control-Allow-Origin': '*',
   });
   createReadStream(fullPath).pipe(res);
+}
+
+function isPathWithin(basePath, targetPath) {
+  const relative = path.relative(basePath, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function streamFile(res, filePath, cacheControl = 'no-cache') {
+  const fileInfo = await stat(filePath).catch(() => null);
+  if (!fileInfo?.isFile()) {
+    return false;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': mimeTypeForExtension(filePath),
+    'Cache-Control': cacheControl,
+  });
+  createReadStream(filePath).pipe(res);
+  return true;
+}
+
+async function handleFrontend(req, res, url) {
+  if (!['GET', 'HEAD'].includes(req.method || 'GET')) {
+    text(res, 405, 'Method not allowed.');
+    return;
+  }
+
+  const requestPath = decodeURIComponent(url.pathname);
+  const relativePath = requestPath === '/' ? 'index.html' : requestPath.replace(/^\/+/, '');
+  const staticFilePath = path.resolve(DIST_DIR, relativePath);
+
+  if (isPathWithin(DIST_DIR, staticFilePath)) {
+    const served = await streamFile(
+      res,
+      staticFilePath,
+      requestPath.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+    );
+    if (served) {
+      return;
+    }
+  }
+
+  if (path.extname(requestPath)) {
+    text(res, 404, 'Not found.');
+    return;
+  }
+
+  const indexPath = path.join(DIST_DIR, 'index.html');
+  const served = await streamFile(res, indexPath, 'no-cache');
+  if (served) {
+    return;
+  }
+
+  text(res, 200, 'Yuque local API server is running.');
 }
 
 async function handleApi(req, res, url) {
@@ -2053,15 +2110,17 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    text(res, 200, 'Yuque local API server is running.');
+    await handleFrontend(req, res, url);
   } catch (error) {
     console.error(error);
     json(res, 500, { error: error instanceof Error ? error.message : 'Internal server error.' });
   }
 });
 
-server.listen(API_PORT, () => {
-  console.log(`Yuque local API server listening on http://127.0.0.1:${API_PORT}`);
+server.listen(API_PORT, SERVER_HOST, () => {
+  console.log(`Yuque local API server listening on http://${SERVER_HOST}:${API_PORT}`);
+  console.log(`Local access: http://127.0.0.1:${API_PORT}`);
+  console.log(`Static assets: ${DIST_DIR}`);
   console.log(`SQLite database: ${DB_PATH}`);
   console.log(`File storage root: ${FILES_DIR}`);
   console.log(`Data directory: ${DATA_DIR}`);
