@@ -1,5 +1,5 @@
 ﻿
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import {
   ArrowLeft,
   Download,
@@ -24,6 +24,7 @@ import {
 import { fileService, folderService, storageService } from '../lib';
 import type { FileRecord, Folder } from '../lib';
 import { ResourceShareModal } from './ResourceShareModal';
+import { notify } from '../lib/notify';
 
 type FileType = FileRecord['type'];
 
@@ -396,7 +397,7 @@ export default function FileManagerGalleryFixed({
     fileInputRef.current?.click();
   };
 
-  const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const uploadList = event.target.files;
     if (!uploadList?.length) return;
 
@@ -409,6 +410,8 @@ export default function FileManagerGalleryFixed({
     const errors: string[] = [];
     setUploading(true);
     setUploadProgress(0);
+
+    let uploadedCount = 0;
 
     try {
       for (const [index, file] of Array.from(uploadList).entries()) {
@@ -444,7 +447,10 @@ export default function FileManagerGalleryFixed({
 
         if (!created) {
           errors.push(`${file.name}: 文件索引保存失败`);
+          continue;
         }
+
+        uploadedCount += 1;
       }
 
       await refreshFiles();
@@ -452,6 +458,12 @@ export default function FileManagerGalleryFixed({
       setUploading(false);
       setUploadTargetFolderId('');
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+
+    if (uploadedCount > 0 && errors.length === 0) {
+      notify.success('上传完成', `已保存 ${uploadedCount} 个文件到「${folderMap.get(uploadTargetFolderId)?.name || '所选文件夹'}」。`);
+    } else if (uploadedCount > 0) {
+      notify.info('部分文件已上传', `成功 ${uploadedCount} 个，失败 ${errors.length} 个。`);
     }
 
     if (errors.length > 0) {
@@ -478,6 +490,7 @@ export default function FileManagerGalleryFixed({
     setNewFolderName('');
     setShowNewFolderModal(false);
     await refreshFiles();
+    notify.success('文件夹已创建', currentFolder ? `已添加到「${currentFolder.name}」中。` : '现在可以选择它作为上传目录。');
   };
 
   const handleToggleStar = async (file: FileItem) => {
@@ -507,6 +520,7 @@ export default function FileManagerGalleryFixed({
     }
 
     applyUpdatedFile(updated);
+    notify.success(file.isStarred ? '已取消收藏' : '已加入收藏', file.name);
   };
 
   const handleDeleteFile = async (file: FileItem) => {
@@ -529,6 +543,7 @@ export default function FileManagerGalleryFixed({
         setSelectedMediaIds((prev) => prev.filter((id) => id !== file.id));
 
         await refreshFiles();
+        notify.success('文件已删除', file.name);
       },
     });
   };
@@ -557,6 +572,7 @@ export default function FileManagerGalleryFixed({
         setSelectionMode(false);
 
         await refreshFiles();
+        notify.success('批量删除完成', `已删除 ${selectedMediaFiles.length} 个文件。`);
       },
     });
   };
@@ -611,11 +627,19 @@ export default function FileManagerGalleryFixed({
     setSelectedMediaIds([]);
     setSelectionMode(false);
     await refreshFiles();
+    notify.success(
+      movingFiles.length > 1 ? '批量移动完成' : '文件已移动',
+      `目标路径：${nextFolderId ? buildPathLabel(nextFolderId, folderMap) : '全部文件'}`,
+    );
   };
 
   const handleLongPressSelect = (fileId: string) => {
+    const isFirstSelection = selectedMediaIds.length === 0;
     setSelectionMode(true);
     setSelectedMediaIds((prev) => (prev.includes(fileId) ? prev : [...prev, fileId]));
+    if (isFirstSelection) {
+      notify.info('已进入多选模式', '继续点击卡片可勾选更多图片或视频。');
+    }
   };
 
   const toggleMediaSelection = (fileId: string) => {
@@ -700,6 +724,10 @@ export default function FileManagerGalleryFixed({
         );
 
         await refreshFiles();
+        notify.success(
+          '文件夹已删除',
+          fileCount > 0 ? `同时清理了 ${fileCount} 个文件。` : childFolderCount > 0 ? `同时删除了 ${childFolderCount} 个子文件夹。` : undefined,
+        );
       },
     });
   };
@@ -710,8 +738,8 @@ export default function FileManagerGalleryFixed({
     (currentFolderId !== null || !hasHomepageMedia);
 
   return (
-    <div className="flex h-full flex-col bg-white">
-      <div className="border-b border-slate-200 px-6 py-4">
+    <div className="app-page-enter flex h-full flex-col bg-white">
+      <div className="app-soft-surface border-b border-slate-200 px-6 py-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
@@ -777,7 +805,7 @@ export default function FileManagerGalleryFixed({
       </div>
 
       {uploading && (
-        <div className="border-b border-blue-100 bg-blue-50 px-6 py-3">
+        <div className="app-section-enter border-b border-blue-100 bg-blue-50 px-6 py-3">
           <div className="mb-2 flex items-center justify-between text-sm text-blue-700">
             <span>上传中...</span>
             <span>{uploadProgress}%</span>
@@ -793,7 +821,7 @@ export default function FileManagerGalleryFixed({
 
       <div className="flex-1 overflow-y-auto px-6 py-6">
         {currentFolder && (
-          <div className="mb-4 flex flex-wrap items-center gap-3">
+          <div className="app-section-enter mb-4 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => setCurrentFolderId(currentFolder.parentId || null)}
@@ -814,7 +842,7 @@ export default function FileManagerGalleryFixed({
         )}
 
         {currentFolders.length > 0 && (
-          <section className="mb-8">
+          <section className="app-section-enter mb-8">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-500">
               <FolderOpen className="h-4 w-4" />
               文件夹 ({currentFolders.length})
@@ -834,7 +862,7 @@ export default function FileManagerGalleryFixed({
         )}
 
         {selectionMode && (
-          <div className="mb-6 flex flex-wrap items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
+          <div className="app-section-enter mb-6 flex flex-wrap items-center gap-3 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3">
             <div className="text-sm font-medium text-blue-800">
               {selectedMediaFiles.length > 0
                 ? `已选中 ${selectedMediaFiles.length} 个图片/视频文件`
@@ -925,7 +953,7 @@ export default function FileManagerGalleryFixed({
         />
 
         {currentFolderId === null && (
-          <section className="mt-10 border-t border-slate-200 pt-8">
+          <section className="app-section-enter mt-10 border-t border-slate-200 pt-8">
             <div className="mb-5">
               <h3 className="text-lg font-semibold text-slate-900">首页预览</h3>
               <p className="mt-1 text-sm text-slate-500">
@@ -968,7 +996,7 @@ export default function FileManagerGalleryFixed({
         )}
 
         {showEmpty && (
-          <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-16 text-center">
+          <div className="app-section-enter rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-16 text-center">
             <div className="text-lg font-semibold text-slate-900">当前目录暂无内容</div>
             <p className="mt-2 text-sm text-slate-500">
               上传文件或新建文件夹后，数据会持久化保存在本地数据库和 data 目录。
@@ -991,7 +1019,7 @@ export default function FileManagerGalleryFixed({
           onClick={() => setShowUploadModal(false)}
         >
           <div
-            className="w-full max-w-md rounded-3xl bg-white shadow-2xl"
+            className="app-modal-enter app-soft-surface w-full max-w-md rounded-3xl bg-white shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="border-b border-slate-200 px-6 py-4 text-lg font-semibold text-slate-900">
@@ -1040,7 +1068,7 @@ export default function FileManagerGalleryFixed({
           onClick={() => setShowNewFolderModal(false)}
         >
           <div
-            className="w-full max-w-md rounded-3xl bg-white shadow-2xl"
+            className="app-modal-enter app-soft-surface w-full max-w-md rounded-3xl bg-white shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="border-b border-slate-200 px-6 py-4 text-lg font-semibold text-slate-900">
@@ -1115,7 +1143,7 @@ export default function FileManagerGalleryFixed({
           onClick={() => setMovingFiles([])}
         >
           <div
-            className="w-full max-w-lg rounded-3xl bg-white shadow-2xl"
+            className="app-modal-enter app-soft-surface w-full max-w-lg rounded-3xl bg-white shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="border-b border-slate-200 px-6 py-4">
@@ -1186,7 +1214,7 @@ interface FolderCardProps {
 
 function FolderCard({ folder, pathLabel, onOpen, onDelete }: FolderCardProps) {
   return (
-    <div className="group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 transition hover:border-blue-300 hover:bg-white">
+    <div className="app-card-hover group relative overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 transition hover:border-blue-300 hover:bg-white">
       <button type="button" onClick={onOpen} className="block w-full p-5 text-left">
         <div className="mb-4 inline-flex rounded-2xl bg-blue-100 p-3 text-blue-700">
           <FolderOpen className="h-6 w-6" />
@@ -1238,7 +1266,7 @@ function ActionDialog({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/45 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-md rounded-3xl bg-white shadow-2xl"
+        className="app-modal-enter app-soft-surface w-full max-w-md rounded-3xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="border-b border-slate-200 px-6 py-5">
@@ -1310,7 +1338,7 @@ function MediaGridSection({
   if (files.length === 0) return null;
 
   return (
-    <section className="mb-8">
+    <section className="app-section-enter mb-8">
       <div className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-500">
         {icon}
         {title}
@@ -1578,7 +1606,7 @@ function MediaCard({
 
   return (
     <div
-      className={`group overflow-hidden rounded-2xl border bg-white shadow-sm ${
+      className={`app-card-hover group overflow-hidden rounded-2xl border bg-white shadow-sm ${
         selected ? 'border-blue-400 ring-2 ring-blue-100' : 'border-slate-200'
       }`}
     >
@@ -1618,7 +1646,7 @@ function MediaCard({
             <MoreHorizontal className="h-4 w-4" />
           </button>
           {showMenu && (
-            <div className="absolute right-0 mt-1 min-w-[110px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+            <div className="app-modal-enter app-soft-surface absolute right-0 mt-1 min-w-[110px] rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
               <button
                 type="button"
                 onClick={() => runMenuAction(onToggleStar)}
@@ -1716,7 +1744,7 @@ interface FileRowProps {
 
 function FileRow({ file, pathLabel, onOpen, onDownload, onToggleStar, onShare, onDelete }: FileRowProps) {
   return (
-    <div className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+    <div className="app-card-hover flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-center lg:justify-between">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-3">
           <div className="rounded-xl bg-slate-100 p-3">{getFileIcon(file.type)}</div>
@@ -1793,7 +1821,7 @@ function PreviewModal({ file, pathLabel, onClose }: PreviewModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl"
+        className="app-modal-enter app-soft-surface w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">

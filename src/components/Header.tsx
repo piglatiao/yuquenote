@@ -32,7 +32,6 @@ export default function Header({
 }: HeaderProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(title);
-  const [showSaveMenu, setShowSaveMenu] = useState(false);
 
   useEffect(() => {
     setTitleValue(title);
@@ -66,9 +65,9 @@ export default function Header({
   };
 
   return (
-    <header className="h-14 bg-white border-b border-yuque-border flex items-center justify-between px-4 shrink-0">
+    <header className="app-soft-surface h-14 shrink-0 border-b border-yuque-border/70 bg-white/92 px-4">
       {/* Left side - Title */}
-      <div className="flex items-center gap-4 flex-1 min-w-0">
+      <div className="flex h-full min-w-0 items-center gap-4">
         {isEditingTitle && canEditTitle ? (
           <input
             type="text"
@@ -102,7 +101,7 @@ export default function Header({
 
         {/* Status indicator */}
         {isEditing && (
-          <span className="shrink-0 flex items-center gap-1 px-2 py-1 bg-yellow-50 text-yellow-600 text-xs rounded-full">
+          <span className="shrink-0 flex items-center gap-1 rounded-full bg-yellow-50 px-2 py-1 text-xs text-yellow-600 shadow-sm">
             <span className="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse" />
             未保存
           </span>
@@ -115,7 +114,7 @@ export default function Header({
         {isEditing && (
           <button
             onClick={onSave}
-            className="flex items-center gap-2 px-4 py-2 bg-yuque-primary text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+            className="flex items-center gap-2 rounded-xl bg-yuque-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:-translate-y-0.5 hover:bg-blue-600 hover:shadow-md"
           >
             <Save className="w-4 h-4" />
             保存
@@ -137,12 +136,11 @@ export default function Header({
         {showComments && (
           <button
             onClick={onToggleComments}
-            className={`p-2 rounded-lg transition-colors ${
+            className={`rounded-xl p-2 ${
               showComments
-                ? 'bg-blue-50 text-blue-500'
-                : 'text-gray-400 hover:text-blue-500 hover:bg-gray-100'
+                ? 'bg-blue-50 text-blue-500 shadow-sm'
+                : 'text-gray-400 hover:bg-gray-100 hover:text-blue-500'
             }`}
-            title="评论"
           >
             <MessageCircle className="w-5 h-5" />
           </button>
@@ -151,12 +149,11 @@ export default function Header({
         {showTodos && (
           <button
             onClick={onToggleTodos}
-            className={`p-2 rounded-lg transition-colors ${
+            className={`rounded-xl p-2 ${
               showTodos
-                ? 'bg-green-50 text-green-500'
-                : 'text-gray-400 hover:text-green-500 hover:bg-gray-100'
+                ? 'bg-green-50 text-green-500 shadow-sm'
+                : 'text-gray-400 hover:bg-gray-100 hover:text-green-500'
             }`}
-            title="任务"
           >
             <CheckCircle2 className="w-5 h-5" />
           </button>
@@ -166,7 +163,7 @@ export default function Header({
         {showShare && onShare && (
           <button
             onClick={onShare}
-            className="flex items-center gap-2 px-4 py-2 text-yuque-textSecondary hover:text-yuque-primary hover:bg-gray-100 rounded-lg transition-colors text-sm"
+            className="flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-yuque-textSecondary hover:-translate-y-0.5 hover:bg-gray-100 hover:text-yuque-primary"
           >
             <Share2 className="w-4 h-4" />
             分享

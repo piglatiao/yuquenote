@@ -7,6 +7,7 @@ interface NameInputModalProps {
   description?: string;
   label?: string;
   value: string;
+  error?: string;
   placeholder?: string;
   confirmText?: string;
   cancelText?: string;
@@ -21,6 +22,7 @@ export default function NameInputModal({
   description,
   label = '名称',
   value,
+  error,
   placeholder,
   confirmText = '确定',
   cancelText = '取消',
@@ -85,6 +87,12 @@ export default function NameInputModal({
             />
           </div>
 
+          {error ? (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+              {error}
+            </div>
+          ) : null}
+
           <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
@@ -105,4 +113,3 @@ export default function NameInputModal({
     </div>
   );
 }
-

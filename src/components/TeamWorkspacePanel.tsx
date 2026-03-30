@@ -3,6 +3,7 @@ import { Check, KeyRound, Loader2, Plus, Search, ShieldCheck, Users, X } from 'l
 import { useNavigate } from 'react-router-dom';
 import NameInputModal from './NameInputModal';
 import { teamService } from '../lib/databaseApi';
+import { notify } from '../lib/notify';
 import type { Team, TeamInvitation, TeamMember } from '../lib/types';
 
 interface TeamWorkspacePanelProps {
@@ -43,6 +44,15 @@ function getStatusText(team: Team) {
   }
 
   return '未加入';
+}
+
+function getSpaceManageLabel(team: Team) {
+  return team.is_owner ? '空间管理' : '空间总览';
+}
+
+function getSpaceManagePath(team: Team) {
+  const basePath = `/spaces/${encodeURIComponent(team.id)}/manage`;
+  return team.is_owner ? basePath : `${basePath}?section=overview`;
 }
 
 export default function TeamWorkspacePanel({
@@ -184,6 +194,7 @@ export default function TeamWorkspacePanel({
       const created = await teamService.createTeam(nextName);
       if (!created) {
         setError('创建空间失败');
+        notify.error('创建空间失败', '请稍后重试。');
         return;
       }
 
@@ -192,8 +203,11 @@ export default function TeamWorkspacePanel({
       await loadTeams();
       setSelectedTeamId(created.id);
       setNotice('空间已创建');
+      notify.success('空间已创建', created.name);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '创建空间失败');
+      const message = actionError instanceof Error ? actionError.message : '创建空间失败';
+      setError(message);
+      notify.error('创建空间失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -208,13 +222,18 @@ export default function TeamWorkspacePanel({
       const ok = await teamService.requestToJoin(teamId);
       if (!ok) {
         setError('提交加入申请失败');
+        notify.error('申请失败', '请稍后重试。');
         return;
       }
 
       await loadTeams();
       setNotice('加入申请已提交，等待空间创建者处理');
+      const targetTeam = discoverableTeams.find((team) => team.id === teamId);
+      notify.success('加入申请已提交', targetTeam?.name || '等待空间创建者处理');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '提交加入申请失败');
+      const message = actionError instanceof Error ? actionError.message : '提交加入申请失败';
+      setError(message);
+      notify.error('申请失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -235,6 +254,7 @@ export default function TeamWorkspacePanel({
       const joinedTeam = await teamService.joinByInviteCode(nextCode);
       if (!joinedTeam) {
         setError('加入空间失败');
+        notify.error('加入空间失败', '请检查邀请码后重试。');
         return;
       }
 
@@ -242,8 +262,11 @@ export default function TeamWorkspacePanel({
       await loadTeams();
       setSelectedTeamId(joinedTeam.id);
       setNotice(`已加入空间「${joinedTeam.name}」`);
+      notify.success('已加入空间', joinedTeam.name);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '邀请码加入失败');
+      const message = actionError instanceof Error ? actionError.message : '邀请码加入失败';
+      setError(message);
+      notify.error('邀请码加入失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -258,14 +281,18 @@ export default function TeamWorkspacePanel({
       const joinedTeam = await teamService.acceptInvitation(invitation.id);
       if (!joinedTeam) {
         setError('接受邀请失败');
+        notify.error('接受邀请失败', '请稍后重试。');
         return;
       }
 
       await loadTeams();
       setSelectedTeamId(joinedTeam.id);
       setNotice(`已加入空间「${joinedTeam.name}」`);
+      notify.success('已加入空间', joinedTeam.name);
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '接受邀请失败');
+      const message = actionError instanceof Error ? actionError.message : '接受邀请失败';
+      setError(message);
+      notify.error('接受邀请失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -280,13 +307,17 @@ export default function TeamWorkspacePanel({
       const ok = await teamService.rejectInvitation(invitationId);
       if (!ok) {
         setError('拒绝邀请失败');
+        notify.error('拒绝邀请失败', '请稍后重试。');
         return;
       }
 
       await loadTeams();
       setNotice('已拒绝邀请');
+      notify.success('已拒绝邀请');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '拒绝邀请失败');
+      const message = actionError instanceof Error ? actionError.message : '拒绝邀请失败';
+      setError(message);
+      notify.error('拒绝邀请失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -305,14 +336,18 @@ export default function TeamWorkspacePanel({
       const ok = await teamService.approveJoinRequest(selectedTeam.id, requestId);
       if (!ok) {
         setError('通过申请失败');
+        notify.error('通过申请失败', '请检查成员上限设置。');
         return;
       }
 
       await loadSelectedTeam(selectedTeam.id, true);
       await loadTeams();
       setNotice('已通过加入申请');
+      notify.success('已通过加入申请');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '通过申请失败');
+      const message = actionError instanceof Error ? actionError.message : '通过申请失败';
+      setError(message);
+      notify.error('通过申请失败', message);
     } finally {
       setBusyKey(null);
     }
@@ -331,22 +366,26 @@ export default function TeamWorkspacePanel({
       const ok = await teamService.rejectJoinRequest(selectedTeam.id, requestId);
       if (!ok) {
         setError('拒绝申请失败');
+        notify.error('拒绝申请失败', '请稍后重试。');
         return;
       }
 
       await loadSelectedTeam(selectedTeam.id, true);
       setNotice('已拒绝加入申请');
+      notify.success('已拒绝加入申请');
     } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : '拒绝申请失败');
+      const message = actionError instanceof Error ? actionError.message : '拒绝申请失败';
+      setError(message);
+      notify.error('拒绝申请失败', message);
     } finally {
       setBusyKey(null);
     }
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-50">
+    <div className="app-page-enter h-full overflow-y-auto bg-slate-50">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-6">
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <div className="text-2xl font-semibold text-slate-900">空间</div>
@@ -393,7 +432,7 @@ export default function TeamWorkspacePanel({
 
         <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
           <aside className="space-y-6">
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <ShieldCheck className="h-4 w-4 text-slate-900" />
                 收到的邀请
@@ -449,7 +488,7 @@ export default function TeamWorkspacePanel({
               )}
             </section>
 
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <KeyRound className="h-4 w-4 text-slate-900" />
                 邀请码加入空间
@@ -480,7 +519,7 @@ export default function TeamWorkspacePanel({
               </div>
             </section>
 
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <Users className="h-4 w-4 text-slate-900" />
                 可申请加入的空间
@@ -519,7 +558,7 @@ export default function TeamWorkspacePanel({
               )}
             </section>
 
-            <section className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <ShieldCheck className="h-4 w-4 text-slate-900" />
                 我的空间
@@ -556,11 +595,11 @@ export default function TeamWorkspacePanel({
                           type="button"
                           onClick={(event) => {
                             event.stopPropagation();
-                            navigate(`/spaces/${encodeURIComponent(team.id)}/manage`);
+                            navigate(getSpaceManagePath(team));
                           }}
                           className="rounded-xl border border-slate-200 px-3 py-2 text-xs text-slate-700 transition hover:bg-white"
                         >
-                          空间管理
+                          {getSpaceManageLabel(team)}
                         </button>
                         <button
                           type="button"
@@ -580,7 +619,7 @@ export default function TeamWorkspacePanel({
             </section>
           </aside>
 
-          <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+          <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
             {!selectedTeam ? (
               <div className="rounded-3xl bg-slate-50 px-6 py-16 text-center text-sm text-slate-500">
                 先从左侧选择一个已加入的空间查看详情。
@@ -593,7 +632,7 @@ export default function TeamWorkspacePanel({
                     <div className="mt-2 text-sm text-slate-500">
                       {selectedTeam.is_owner
                         ? '你是这个空间的创建者，可以处理成员申请并进入空间管理。'
-                        : '你已经加入这个空间，可以进入空间查看团队内容。'}
+                        : '你已经加入这个空间，可以进入空间查看团队内容，也可以打开空间总览查看信息。'}
                     </div>
                   </div>
                   <div className="rounded-full bg-slate-100 px-3 py-2 text-xs text-slate-600">
@@ -604,10 +643,10 @@ export default function TeamWorkspacePanel({
                 <div className="flex flex-wrap gap-3">
                   <button
                     type="button"
-                    onClick={() => navigate(`/spaces/${encodeURIComponent(selectedTeam.id)}/manage`)}
+                    onClick={() => navigate(getSpaceManagePath(selectedTeam))}
                     className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                   >
-                    空间管理
+                    {getSpaceManageLabel(selectedTeam)}
                   </button>
                   <button
                     type="button"

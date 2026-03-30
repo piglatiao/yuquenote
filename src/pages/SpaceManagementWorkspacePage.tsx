@@ -26,6 +26,7 @@ import { apiRequest } from '../lib/api';
 import { authService } from '../lib/authApi';
 import { teamService } from '../lib/databaseApi';
 import { documentService } from '../lib/documentsApi';
+import { notify } from '../lib/notify';
 import type { Document, Team, TeamInvitation, TeamMember, User } from '../lib/types';
 
 type ManageSection = 'overview' | 'members' | 'settings';
@@ -431,7 +432,7 @@ function LegacySpaceManagementWorkspacePage() {
     if (!isOwner) return null;
 
     return (
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="text-lg font-semibold text-slate-900">待审批申请</div>
@@ -496,7 +497,7 @@ function LegacySpaceManagementWorkspacePage() {
         <div className="mt-2 text-sm text-slate-500">查看当前空间的成员状态、邀请入口和基础使用数据。</div>
       </section>
 
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div className="flex min-w-0 items-center gap-4">
             <SpaceAvatar team={team} />
@@ -543,7 +544,7 @@ function LegacySpaceManagementWorkspacePage() {
         </div>
       </section>
 
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-lg font-semibold text-slate-900">使用数据</div>
@@ -572,7 +573,7 @@ function LegacySpaceManagementWorkspacePage() {
 
       {renderJoinRequests()}
 
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="text-lg font-semibold text-slate-900">空间成员</div>
           <div className="relative w-full max-w-sm">
@@ -617,7 +618,7 @@ function LegacySpaceManagementWorkspacePage() {
         <div className="mt-2 text-sm text-slate-500">可以修改空间名称、创建时间、空间头像和成员上限。</div>
       </section>
 
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
         {!isOwner && (
           <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             当前只有空间管理员可以修改这些设置。
@@ -942,7 +943,7 @@ export default function SpaceManagementWorkspacePage() {
   const [error, setError] = useState('');
 
   const rawSection = searchParams.get('section');
-  const activeSection: ManageSection =
+  const requestedSection: ManageSection =
     rawSection === 'members' || rawSection === 'settings' ? rawSection : 'overview';
 
   const approvedMembers = useMemo(
@@ -1011,6 +1012,10 @@ export default function SpaceManagementWorkspacePage() {
   }, [documents, team]);
 
   const isOwner = !!team?.is_owner;
+  const activeSection: ManageSection = isOwner ? requestedSection : 'overview';
+  const visibleNavItems = isOwner
+    ? spaceManagementNavItems
+    : spaceManagementNavItems.filter((item) => item.key === 'overview');
   const currentMemberLimit = Number(team?.member_limit ?? DEFAULT_MEMBER_LIMIT);
   const usedSeatPercent =
     currentMemberLimit > 0
@@ -1066,13 +1071,20 @@ export default function SpaceManagementWorkspacePage() {
       setDocuments(allDocuments);
       syncSettingsForm(nextTeam);
       setMemberFeedback('');
+      if (mode === 'refresh') {
+        notify.success('空间数据已刷新', nextTeam.name);
+      }
     } catch (loadError) {
       setTeam(null);
       setMembers([]);
       setJoinRequests([]);
       setInvitations([]);
       setDocuments([]);
-      setError(loadError instanceof Error ? loadError.message : '空间管理数据加载失败');
+      const message = loadError instanceof Error ? loadError.message : '空间管理数据加载失败';
+      setError(message);
+      if (mode === 'refresh') {
+        notify.error('刷新失败', message);
+      }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -1088,6 +1100,14 @@ export default function SpaceManagementWorkspacePage() {
     setInviteCandidates([]);
     setInviteFeedback('');
   }, [teamId]);
+
+  useEffect(() => {
+    if (!team || isOwner || requestedSection === 'overview') {
+      return;
+    }
+
+    setSearchParams({ section: 'overview' }, { replace: true });
+  }, [isOwner, requestedSection, setSearchParams, team]);
 
   useEffect(() => {
     if (!isOwner || !team) {
@@ -1130,7 +1150,7 @@ export default function SpaceManagementWorkspacePage() {
   }, [inviteQuery, isOwner, team]);
 
   const switchSection = (section: ManageSection) => {
-    setSearchParams({ section });
+    setSearchParams({ section: isOwner ? section : 'overview' });
   };
 
   const goBackToSpace = () => {
@@ -1152,11 +1172,17 @@ export default function SpaceManagementWorkspacePage() {
       const approved = await teamService.approveJoinRequest(team.id, requestId);
       if (!approved) {
         setMemberFeedback('审批失败，可能已经达到成员上限。');
+        notify.error('审批失败', '可能已经达到成员上限。');
         return;
       }
 
       setMemberFeedback('已通过加入申请。');
       await load('refresh');
+      notify.success('已通过加入申请');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '审批失败';
+      setMemberFeedback(message);
+      notify.error('审批失败', message);
     } finally {
       setBusyRequestId(null);
     }
@@ -1172,11 +1198,17 @@ export default function SpaceManagementWorkspacePage() {
       const rejected = await teamService.rejectJoinRequest(team.id, requestId);
       if (!rejected) {
         setMemberFeedback('拒绝申请失败，请稍后重试。');
+        notify.error('拒绝申请失败', '请稍后重试。');
         return;
       }
 
       setMemberFeedback('已拒绝加入申请。');
       await load('refresh');
+      notify.success('已拒绝加入申请');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '拒绝申请失败';
+      setMemberFeedback(message);
+      notify.error('拒绝申请失败', message);
     } finally {
       setBusyRequestId(null);
     }
@@ -1192,14 +1224,18 @@ export default function SpaceManagementWorkspacePage() {
       const invitation = await teamService.createInviteCode(team.id);
       if (!invitation) {
         setInviteFeedback('生成邀请码失败');
+        notify.error('生成邀请码失败', '请稍后重试。');
         return;
       }
 
       const nextInvitations = await teamService.getInvitations(team.id);
       setInvitations(nextInvitations);
       setInviteFeedback('邀请码已更新');
+      notify.success('邀请码已更新', invitation.code || '可继续复制发给成员。');
     } catch (inviteError) {
-      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '生成邀请码失败');
+      const message = inviteError instanceof Error ? inviteError.message : '生成邀请码失败';
+      setInviteFeedback(message);
+      notify.error('生成邀请码失败', message);
     } finally {
       setIsGeneratingInviteCode(false);
     }
@@ -1208,14 +1244,17 @@ export default function SpaceManagementWorkspacePage() {
   const handleCopyInviteCode = async () => {
     if (!codeInvitation?.code) {
       setInviteFeedback('当前还没有可用的邀请码');
+      notify.info('当前还没有可用的邀请码');
       return;
     }
 
     try {
       await navigator.clipboard.writeText(codeInvitation.code);
       setInviteFeedback('邀请码已复制');
+      notify.copied('邀请码已复制');
     } catch {
       setInviteFeedback('复制邀请码失败');
+      notify.error('复制失败', '请检查浏览器剪贴板权限。');
     }
   };
 
@@ -1229,6 +1268,7 @@ export default function SpaceManagementWorkspacePage() {
       const invitation = await teamService.createEmailInvitation(team.id, user.id);
       if (!invitation) {
         setInviteFeedback('发送邀请失败');
+        notify.error('发送邀请失败', '请稍后重试。');
         return;
       }
 
@@ -1237,8 +1277,11 @@ export default function SpaceManagementWorkspacePage() {
       setInviteQuery('');
       setInviteCandidates([]);
       setInviteFeedback(`已向 ${user.email} 发送邀请`);
+      notify.success('邀请已发送', user.email);
     } catch (inviteError) {
-      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '发送邀请失败');
+      const message = inviteError instanceof Error ? inviteError.message : '发送邀请失败';
+      setInviteFeedback(message);
+      notify.error('发送邀请失败', message);
     } finally {
       setBusyInviteCandidateId(null);
     }
@@ -1254,14 +1297,18 @@ export default function SpaceManagementWorkspacePage() {
       const ok = await teamService.revokeInvitation(team.id, invitationId);
       if (!ok) {
         setInviteFeedback('撤销邀请失败');
+        notify.error('撤销邀请失败', '请稍后重试。');
         return;
       }
 
       const nextInvitations = await teamService.getInvitations(team.id);
       setInvitations(nextInvitations);
       setInviteFeedback('邀请已撤销');
+      notify.success('邀请已撤销');
     } catch (inviteError) {
-      setInviteFeedback(inviteError instanceof Error ? inviteError.message : '撤销邀请失败');
+      const message = inviteError instanceof Error ? inviteError.message : '撤销邀请失败';
+      setInviteFeedback(message);
+      notify.error('撤销邀请失败', message);
     } finally {
       setBusyInvitationId(null);
     }
@@ -1274,6 +1321,7 @@ export default function SpaceManagementWorkspacePage() {
 
     if (!file.type.startsWith('image/')) {
       setSettingsFeedback('请选择图片文件作为空间头像。');
+      notify.error('上传失败', '请选择图片文件作为空间头像。');
       return;
     }
 
@@ -1296,8 +1344,11 @@ export default function SpaceManagementWorkspacePage() {
 
       setSettingsAvatarUrl(upload.url);
       setSettingsFeedback('空间头像已上传，保存设置后生效。');
+      notify.success('空间头像已上传', '保存设置后会同步更新到空间入口。');
     } catch (uploadError) {
-      setSettingsFeedback(uploadError instanceof Error ? uploadError.message : '空间头像上传失败');
+      const message = uploadError instanceof Error ? uploadError.message : '空间头像上传失败';
+      setSettingsFeedback(message);
+      notify.error('空间头像上传失败', message);
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -1311,27 +1362,32 @@ export default function SpaceManagementWorkspacePage() {
 
     if (!nextName) {
       setSettingsFeedback('空间名称不能为空。');
+      notify.info('空间名称不能为空');
       return;
     }
 
     if (!Number.isInteger(nextMemberLimit) || nextMemberLimit < 1) {
       setSettingsFeedback('成员上限必须是大于 0 的整数。');
+      notify.info('成员上限必须是大于 0 的整数');
       return;
     }
 
     if (nextMemberLimit < approvedMembers.length) {
       setSettingsFeedback(`成员上限不能小于当前已加入成员数 ${approvedMembers.length}。`);
+      notify.info('成员上限过小', `当前已有 ${approvedMembers.length} 位成员。`);
       return;
     }
 
     if (!settingsCreatedAt) {
       setSettingsFeedback('请选择有效的创建时间。');
+      notify.info('请选择有效的创建时间');
       return;
     }
 
     const createdAt = new Date(settingsCreatedAt);
     if (Number.isNaN(createdAt.getTime())) {
       setSettingsFeedback('创建时间格式不正确。');
+      notify.info('创建时间格式不正确');
       return;
     }
 
@@ -1348,12 +1404,18 @@ export default function SpaceManagementWorkspacePage() {
 
       if (!updated) {
         setSettingsFeedback('空间设置保存失败。');
+        notify.error('空间设置保存失败', '请稍后重试。');
         return;
       }
 
       setTeam((current) => (current ? { ...current, ...updated } : updated));
       syncSettingsForm(updated);
       setSettingsFeedback('空间设置已保存。');
+      notify.success('空间设置已保存', updated.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '空间设置保存失败';
+      setSettingsFeedback(message);
+      notify.error('空间设置保存失败', message);
     } finally {
       setIsSavingSettings(false);
     }
@@ -1365,7 +1427,7 @@ export default function SpaceManagementWorkspacePage() {
     }
 
     return (
-      <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="text-lg font-semibold text-slate-900">加入申请</div>
@@ -1437,7 +1499,7 @@ export default function SpaceManagementWorkspacePage() {
   const renderOverview = () => (
     <div className="space-y-6">
       <section className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_360px]">
-        <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex min-w-0 items-center gap-4">
               <SpaceAvatar team={team} className="h-20 w-20 rounded-[28px] object-cover" />
@@ -1453,24 +1515,26 @@ export default function SpaceManagementWorkspacePage() {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={() => switchSection('members')}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                <UserPlus className="h-4 w-4" />
-                人员与权限
-              </button>
-              <button
-                type="button"
-                onClick={() => switchSection('settings')}
-                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800"
-              >
-                <Settings className="h-4 w-4" />
-                空间设置
-              </button>
-            </div>
+            {isOwner ? (
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => switchSection('members')}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
+                >
+                  <UserPlus className="h-4 w-4" />
+                  人员与权限
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchSection('settings')}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800"
+                >
+                  <Settings className="h-4 w-4" />
+                  空间设置
+                </button>
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-8 grid gap-4 md:grid-cols-3">
@@ -1495,7 +1559,7 @@ export default function SpaceManagementWorkspacePage() {
           </div>
         </div>
 
-        <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="text-lg font-semibold text-slate-900">空间信息</div>
           <div className="mt-5 space-y-3">
             <SpaceManageInfoItem
@@ -1563,7 +1627,7 @@ export default function SpaceManagementWorkspacePage() {
       {renderJoinRequests()}
 
       {isOwner ? (
-        <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div>
               <div className="text-lg font-semibold text-slate-900">邀请成员</div>
@@ -1732,7 +1796,7 @@ export default function SpaceManagementWorkspacePage() {
         </section>
       ) : null}
 
-      <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <div className="text-lg font-semibold text-slate-900">成员列表</div>
@@ -1796,7 +1860,7 @@ export default function SpaceManagementWorkspacePage() {
   const renderSettings = () => (
     <div className="space-y-6">
       <section className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="text-lg font-semibold text-slate-900">空间头像</div>
           <div className="mt-5 flex justify-center">
             <label htmlFor="space-avatar-upload" className={`group relative ${isOwner ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
@@ -1813,6 +1877,7 @@ export default function SpaceManagementWorkspacePage() {
                     event.stopPropagation();
                     setSettingsAvatarUrl('');
                     setSettingsFeedback('空间头像已清空，保存设置后生效。');
+                    notify.info('空间头像已清空', '保存设置后会恢复为默认头像。');
                   }}
                   disabled={!isOwner || isUploadingAvatar}
                   className="absolute -right-2 -top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 transition hover:bg-black/85 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40"
@@ -1835,8 +1900,15 @@ export default function SpaceManagementWorkspacePage() {
             </label>
           </div>
 
-          <div className="mt-4 text-center text-sm text-slate-500">
-            点击头像可直接上传或更换空间头像，右上角悬浮小叉可清除头像。
+          <div className="mt-4 rounded-[28px] bg-slate-50 px-5 py-5 text-center">
+            <div className="text-sm leading-7 text-slate-600">
+              人安静地生活，
+              <br />
+              哪怕是静静地听着风声，
+              <br />
+              亦能感觉到诗意的生活。
+            </div>
+            <div className="mt-3 text-xs tracking-[0.12em] text-slate-400">马丁·海德格尔</div>
           </div>
 
           <label className="hidden mt-6 inline-flex w-full cursor-pointer items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 transition hover:bg-slate-50">
@@ -1860,12 +1932,10 @@ export default function SpaceManagementWorkspacePage() {
             清空头像
           </button>
 
-          <div className="mt-4 text-sm text-slate-500">
-            新建空间本身就是团队空间，这里的头像会作为空间头像统一展示。
-          </div>
+          <div className="mt-4 text-center text-xs text-slate-400">点击头像即可上传或更换空间头像。</div>
         </div>
 
-        <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-2">
             <div className="text-lg font-semibold text-slate-900">空间设置</div>
             <div className="text-sm text-slate-500">
@@ -1971,9 +2041,9 @@ export default function SpaceManagementWorkspacePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f5f7fb]">
+    <div className="app-page-enter min-h-screen bg-[#f5f7fb]">
       <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-6 py-8">
-        <div className="rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex min-w-0 items-center gap-4">
               <button
@@ -1991,9 +2061,11 @@ export default function SpaceManagementWorkspacePage() {
                 <SpaceAvatar team={team} className="h-14 w-14 rounded-[24px] object-cover" />
                 <div className="min-w-0">
                   <div className="truncate text-2xl font-semibold text-slate-900">
-                    {team?.name || '空间管理'}
+                    {team?.name || (isOwner ? '空间管理' : '空间总览')}
                   </div>
-                  <div className="mt-1 text-sm text-slate-500">独立空间管理页面</div>
+                  <div className="mt-1 text-sm text-slate-500">
+                    {isOwner ? '独立空间管理页面' : '当前空间总览'}
+                  </div>
                 </div>
               </div>
             </div>
@@ -2010,7 +2082,7 @@ export default function SpaceManagementWorkspacePage() {
           </div>
 
           <div className="mt-6 flex flex-wrap gap-3">
-            {spaceManagementNavItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <SpaceManageSectionTab
                 key={item.key}
                 icon={item.icon}
@@ -2024,14 +2096,14 @@ export default function SpaceManagementWorkspacePage() {
 
         <main className="mt-6 flex-1">
           {isLoading ? (
-            <div className="rounded-[32px] border border-slate-200 bg-white px-6 py-20 text-center shadow-sm">
+            <div className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white px-6 py-20 text-center shadow-sm">
               <div className="inline-flex items-center gap-2 text-sm text-slate-500">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 正在加载空间管理数据...
               </div>
             </div>
           ) : error ? (
-            <div className="rounded-[32px] border border-rose-200 bg-white px-6 py-20 text-center shadow-sm">
+            <div className="app-card-hover app-section-enter rounded-[32px] border border-rose-200 bg-white px-6 py-20 text-center shadow-sm">
               <div className="text-lg font-semibold text-rose-600">{error}</div>
               <div className="mt-5 flex justify-center gap-3">
                 <button

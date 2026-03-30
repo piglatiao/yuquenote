@@ -4,6 +4,14 @@ import type { LoginCredentials, RegisterData, User } from './types';
 const AUTH_TOKEN_KEY = 'yuque_auth_token';
 const USER_KEY = 'yuque_user';
 
+export interface ProfileUpdatePayload {
+  nickname?: string;
+  avatar_url?: string | null;
+  email?: string;
+  current_password?: string;
+  new_password?: string;
+}
+
 function readStoredUser(): User | null {
   const stored = localStorage.getItem(USER_KEY);
   return stored ? JSON.parse(stored) : null;
@@ -73,7 +81,7 @@ export const authService = {
     }
   },
 
-  async updateProfile(updates: Partial<User>): Promise<{ user?: User; error?: string }> {
+  async updateProfile(updates: ProfileUpdatePayload): Promise<{ user?: User; error?: string }> {
     const currentUser = readStoredUser();
     if (!currentUser) {
       return { error: 'User is not logged in.' };

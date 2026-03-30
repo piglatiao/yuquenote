@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  Download,
   File,
   FileText,
   Image as ImageIcon,
   Loader2,
   Star,
   Video,
+  X,
 } from 'lucide-react';
 import { documentService, type DocTreeItem } from '../lib/documentsApi';
 import { fileService, folderService } from '../lib/databaseApi';
@@ -14,8 +16,6 @@ import type { Document, FileRecord, Folder } from '../lib/types';
 interface FavoritesPanelProps {
   docTree: DocTreeItem[];
   teamId?: string | null;
-  onOpenDocument: (docId: string) => void;
-  onOpenFile: (file: FileRecord) => void;
 }
 
 function formatTime(value: string) {
@@ -60,14 +60,15 @@ function getFileIcon(type: FileRecord['type']) {
 export default function FavoritesPanel({
   docTree,
   teamId = null,
-  onOpenDocument,
-  onOpenFile,
 }: FavoritesPanelProps) {
   const [starredDocs, setStarredDocs] = useState<Document[]>([]);
   const [starredFiles, setStarredFiles] = useState<FileRecord[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
+  const [previewFile, setPreviewFile] = useState<FileRecord | null>(null);
+  const [previewLoadingLabel, setPreviewLoadingLabel] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -154,9 +155,36 @@ export default function FavoritesPanel({
 
   const totalFavorites = noteItems.length + starredFiles.length;
 
+  const openDocumentPreview = async (doc: Document) => {
+    setPreviewFile(null);
+    setPreviewLoadingLabel(doc.title);
+
+    if (doc.content?.trim()) {
+      setPreviewDocument(doc);
+      setPreviewLoadingLabel('');
+      return;
+    }
+
+    const latest = await documentService.getById(doc.id);
+    setPreviewDocument(latest || doc);
+    setPreviewLoadingLabel('');
+  };
+
+  const openFilePreview = (file: FileRecord) => {
+    setPreviewDocument(null);
+    setPreviewFile(file);
+    setPreviewLoadingLabel('');
+  };
+
+  const closePreview = () => {
+    setPreviewDocument(null);
+    setPreviewFile(null);
+    setPreviewLoadingLabel('');
+  };
+
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center bg-[#faf7f1]">
+      <div className="app-page-enter flex h-full items-center justify-center bg-[#faf7f1]">
         <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-sm">
           <Loader2 className="h-4 w-4 animate-spin" />
           正在整理收藏内容...
@@ -166,9 +194,9 @@ export default function FavoritesPanel({
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-[#faf7f1]">
+    <div className="app-page-enter h-full overflow-y-auto bg-[#faf7f1]">
       <div className="mx-auto max-w-7xl px-6 py-8">
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <div className="inline-flex items-center gap-2 rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
@@ -197,7 +225,7 @@ export default function FavoritesPanel({
         ) : null}
 
         {totalFavorites === 0 ? (
-          <div className="mt-6 rounded-[28px] border border-dashed border-slate-300 bg-white px-6 py-16 text-center shadow-sm">
+          <div className="app-section-enter rounded-[28px] border border-dashed border-slate-300 bg-white px-6 py-16 text-center shadow-sm">
             <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-500">
               <Star className="h-6 w-6" />
             </div>
@@ -219,8 +247,8 @@ export default function FavoritesPanel({
                   <button
                     key={doc.id}
                     type="button"
-                    onClick={() => onOpenDocument(doc.id)}
-                    className="rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+                    onClick={() => void openDocumentPreview(doc)}
+                    className="app-card-hover rounded-[24px] border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
                   >
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -252,7 +280,7 @@ export default function FavoritesPanel({
                     key={file.id}
                     file={file}
                     pathLabel={buildFolderPathLabel(file.folder_id, folderMap)}
-                    onOpen={() => onOpenFile(file)}
+                    onOpen={() => openFilePreview(file)}
                   />
                 ))}
               </div>
@@ -272,7 +300,7 @@ export default function FavoritesPanel({
                     key={file.id}
                     file={file}
                     pathLabel={buildFolderPathLabel(file.folder_id, folderMap)}
-                    onOpen={() => onOpenFile(file)}
+                    onOpen={() => openFilePreview(file)}
                   />
                 ))}
               </div>
@@ -291,8 +319,8 @@ export default function FavoritesPanel({
                   <button
                     key={file.id}
                     type="button"
-                    onClick={() => onOpenFile(file)}
-                    className="flex w-full flex-col gap-4 rounded-[24px] border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-sky-300 hover:shadow-md md:flex-row md:items-center md:justify-between"
+                    onClick={() => openFilePreview(file)}
+                    className="app-card-hover flex w-full flex-col gap-4 rounded-[24px] border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-sky-300 hover:shadow-md md:flex-row md:items-center md:justify-between"
                   >
                     <div className="flex min-w-0 items-center gap-3">
                       <div className="rounded-2xl bg-slate-100 p-3">{getFileIcon(file.type)}</div>
@@ -317,6 +345,15 @@ export default function FavoritesPanel({
           </>
         )}
       </div>
+
+      {(previewDocument || previewFile || previewLoadingLabel) && (
+        <FavoritesPreviewModal
+          document={previewDocument}
+          file={previewFile}
+          loadingLabel={previewLoadingLabel}
+          onClose={closePreview}
+        />
+      )}
     </div>
   );
 }
@@ -328,7 +365,7 @@ interface SummaryStatProps {
 
 function SummaryStat({ label, value }: SummaryStatProps) {
   return (
-    <div className="rounded-2xl bg-slate-50 px-4 py-3">
+    <div className="app-card-hover rounded-2xl bg-slate-50 px-4 py-3">
       <div className="text-xs text-slate-500">{label}</div>
       <div className="mt-1 text-xl font-semibold text-slate-900">{value}</div>
     </div>
@@ -369,7 +406,7 @@ function FavoriteMediaCard({ file, pathLabel, onOpen }: FavoriteMediaCardProps) 
     <button
       type="button"
       onClick={onOpen}
-      className="group overflow-hidden rounded-[24px] border border-slate-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
+      className="app-card-hover group overflow-hidden rounded-[24px] border border-slate-200 bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-300 hover:shadow-md"
     >
       <div className="relative aspect-square overflow-hidden bg-slate-100">
         {file.type === 'image' ? (
@@ -397,5 +434,135 @@ function FavoriteMediaCard({ file, pathLabel, onOpen }: FavoriteMediaCardProps) 
         <div className="mt-1 text-xs text-slate-400">更新于：{formatTime(file.updated_at)}</div>
       </div>
     </button>
+  );
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+interface FavoritesPreviewModalProps {
+  document: Document | null;
+  file: FileRecord | null;
+  loadingLabel: string;
+  onClose: () => void;
+}
+
+function FavoritesPreviewModal({
+  document,
+  file,
+  loadingLabel,
+  onClose,
+}: FavoritesPreviewModalProps) {
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
+      <div
+        className="app-modal-enter app-soft-surface flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-[32px] bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
+          <div className="min-w-0">
+            <div className="truncate text-lg font-semibold text-slate-900">
+              {document?.title || file?.name || loadingLabel || '收藏预览'}
+            </div>
+            <div className="mt-1 text-sm text-slate-500">
+              {document
+                ? `更新于：${formatTime(document.updated_at)}`
+                : file
+                  ? `${formatFileSize(file.size)} · 更新于：${formatTime(file.updated_at)}`
+                  : '正在加载内容...'}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {file ? (
+              <a
+                href={file.url}
+                download={file.name}
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+              >
+                <Download className="h-4 w-4" />
+                下载
+              </a>
+            ) : null}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
+              aria-label="关闭预览"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-auto bg-[#f8fafc] px-6 py-6">
+          {loadingLabel ? (
+            <div className="flex h-full min-h-[320px] items-center justify-center">
+              <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm text-slate-600 shadow-sm">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                正在打开「{loadingLabel}」...
+              </div>
+            </div>
+          ) : null}
+
+          {!loadingLabel && document ? (
+            <article className="app-card-hover mx-auto max-w-4xl rounded-[28px] border border-slate-200 bg-white px-8 py-7 shadow-sm">
+              <div className="border-b border-slate-100 pb-5">
+                <div className="text-3xl font-semibold text-slate-900">{document.title}</div>
+                <div className="mt-2 text-sm text-slate-500">
+                  创建于：{formatTime(document.created_at)} · 更新于：{formatTime(document.updated_at)}
+                </div>
+              </div>
+              <div
+                className="share-content prose-yuque mt-6 max-w-none"
+                dangerouslySetInnerHTML={{ __html: document.content || '<p>这篇笔记暂时没有内容。</p>' }}
+              />
+            </article>
+          ) : null}
+
+          {!loadingLabel && file ? (
+            <div className="app-card-hover overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
+              <div className="border-b border-slate-100 px-6 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-2xl bg-slate-100 p-3">{getFileIcon(file.type)}</div>
+                  <div className="min-w-0">
+                    <div className="truncate text-xl font-semibold text-slate-900">{file.name}</div>
+                    <div className="mt-1 text-sm text-slate-500">
+                      {formatFileSize(file.size)} · 更新于：{formatTime(file.updated_at)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-950 px-6 py-6">
+                {file.type === 'image' ? (
+                  <img src={file.url} alt={file.name} className="mx-auto max-h-[70vh] max-w-full rounded-2xl object-contain" />
+                ) : file.type === 'video' ? (
+                  <video src={file.url} controls className="mx-auto max-h-[70vh] max-w-full rounded-2xl" />
+                ) : file.type === 'audio' ? (
+                  <div className="flex min-h-[240px] items-center justify-center">
+                    <audio src={file.url} controls className="w-full max-w-2xl" />
+                  </div>
+                ) : file.type === 'pdf' ? (
+                  <iframe src={file.url} className="h-[70vh] w-full rounded-2xl bg-white" title={file.name} />
+                ) : (
+                  <div className="rounded-3xl bg-white px-8 py-16 text-center">
+                    <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-100">
+                      {getFileIcon(file.type)}
+                    </div>
+                    <div className="text-lg font-semibold text-slate-900">当前文件类型暂不支持在线预览</div>
+                    <div className="mt-2 text-sm text-slate-500">可以直接点击右上角下载，在本地查看原文件。</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }

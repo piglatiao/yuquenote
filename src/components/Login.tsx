@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BookOpen, Eye, EyeOff, Mail, Lock, ArrowRight, User } from 'lucide-react';
 import { authService } from '../lib/authApi';
+import { notify } from '../lib/notify';
 import type { LoginCredentials, RegisterData } from '../lib/types';
 
 interface LoginProps {
@@ -37,11 +38,14 @@ export default function Login({ onLogin }: LoginProps) {
 
       if (result.error) {
         setError(result.error);
+        notify.error('登录失败', result.error);
       } else if (result.user) {
+        notify.success('登录成功', `欢迎回来，${result.user.nickname || result.user.email}`);
         onLogin();
       }
     } catch (err) {
       setError('登录失败，请重试');
+      notify.error('登录失败', '请稍后重试。');
     } finally {
       setIsLoading(false);
     }
@@ -53,6 +57,7 @@ export default function Login({ onLogin }: LoginProps) {
 
     if (registerForm.password.length < 6) {
       setError('密码至少需要6个字符');
+      notify.info('密码至少需要 6 个字符');
       return;
     }
 
@@ -63,23 +68,26 @@ export default function Login({ onLogin }: LoginProps) {
 
       if (result.error) {
         setError(result.error);
+        notify.error('注册失败', result.error);
       } else if (result.user) {
         // Auto login after registration
         await authService.login({
           email: registerForm.email,
           password: registerForm.password,
         });
+        notify.success('注册成功', '已自动登录当前账号。');
         onLogin();
       }
     } catch (err) {
       setError('注册失败，请重试');
+      notify.error('注册失败', '请稍后重试。');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 flex items-center justify-center p-4">
+    <div className="app-page-enter flex min-h-screen items-center justify-center bg-gradient-to-br from-blue-50 via-white to-indigo-50 p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -91,7 +99,7 @@ export default function Login({ onLogin }: LoginProps) {
         </div>
 
         {/* Form Card */}
-        <div className="bg-white rounded-2xl shadow-xl shadow-gray-200/50 p-8">
+        <div className="app-card-hover app-soft-surface rounded-2xl bg-white p-8 shadow-xl shadow-gray-200/50">
           {/* Tab Switcher */}
           <div className="flex bg-gray-100 rounded-lg p-1 mb-6">
             <button

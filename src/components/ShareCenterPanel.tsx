@@ -16,6 +16,7 @@ import {
 import { Link } from 'react-router-dom';
 import { documentService } from '../lib/documentsApi';
 import { fileService, publicResourceService, shareService, teamService } from '../lib/databaseApi';
+import { notify } from '../lib/notify';
 import type {
   Document,
   FileRecord,
@@ -201,8 +202,10 @@ export default function ShareCenterPanel({
       await navigator.clipboard.writeText(`${window.location.origin}/share/${token}`);
       setCopiedKey(key);
       window.setTimeout(() => setCopiedKey(''), 1800);
+      notify.copied('分享链接已复制');
     } catch {
       setCopiedKey('');
+      notify.error('复制失败', '请稍后重试。');
     }
   };
 
@@ -215,6 +218,7 @@ export default function ShareCenterPanel({
       const deleted = await shareService.deleteShareLink(shareLinkId);
       if (!deleted) {
         setError('取消分享失败，请稍后重试。');
+        notify.error('取消分享失败', '请稍后重试。');
         return;
       }
 
@@ -223,15 +227,16 @@ export default function ShareCenterPanel({
       } else {
         setFiles((prev) => prev.filter((item) => item.share_link_id !== shareLinkId));
       }
+      notify.success('分享已取消');
     } finally {
       setBusyKey('');
     }
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-50">
+    <div className="app-page-enter h-full overflow-y-auto bg-slate-50">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-6">
-        <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-3">
               <div className={`rounded-2xl p-3 ${pageMeta.iconStyle}`}>{pageMeta.icon}</div>
@@ -244,7 +249,7 @@ export default function ShareCenterPanel({
               type="button"
               onClick={() => void load()}
               disabled={isLoading}
-              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 hover:-translate-y-0.5 hover:bg-slate-50 disabled:opacity-60"
             >
               <RefreshCcw className="h-4 w-4" />
               刷新列表
@@ -261,12 +266,12 @@ export default function ShareCenterPanel({
         </section>
 
         {isLoading ? (
-          <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-20 text-center text-sm text-slate-500 shadow-sm">
+          <div className="app-card-hover rounded-[28px] border border-slate-200 bg-white px-6 py-20 text-center text-sm text-slate-500 shadow-sm">
             {pageMeta.loadingText}
           </div>
         ) : (
           <div className="grid gap-6 xl:grid-cols-2">
-            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <FileText className="h-4 w-4 text-blue-600" />
                 {pageMeta.noteTitle}
@@ -363,7 +368,7 @@ export default function ShareCenterPanel({
               )}
             </section>
 
-            <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+            <section className="app-card-hover app-section-enter rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-4 flex items-center gap-2 text-sm font-medium text-slate-700">
                 <Image className="h-4 w-4 text-emerald-600" />
                 {pageMeta.fileTitle}

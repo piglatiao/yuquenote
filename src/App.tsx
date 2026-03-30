@@ -887,12 +887,6 @@ function App() {
             <FavoritesPanel
               docTree={visibleDocTree}
               teamId={activeWorkspaceTeam?.id ?? null}
-              onOpenDocument={(docId) => {
-                void openDocumentById(docId);
-              }}
-              onOpenFile={(file) => {
-                void handleOpenFileRecord(file);
-              }}
             />
           ) : activeTab === 'docs' && selectedDoc ? (
             <div className="h-full flex">

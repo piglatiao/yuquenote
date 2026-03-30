@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy, ExternalLink, Link2, Lock, Trash2, Users, X } from 'lucide-react';
 import { shareService, teamService } from '../lib/databaseApi';
+import { notify } from '../lib/notify';
 import type { ShareLink, Team } from '../lib/types';
 
 type ShareMode = 'space' | 'link';
@@ -89,8 +90,10 @@ export function ResourceShareModal({
       await navigator.clipboard.writeText(value);
       setCopiedId(key);
       window.setTimeout(() => setCopiedId(''), 1800);
+      notify.copied('分享链接已复制');
     } catch {
       setCopiedId('');
+      notify.error('复制失败', '请稍后重试。');
     }
   };
 
@@ -98,9 +101,11 @@ export function ResourceShareModal({
     const ok = await shareService.deleteShareLink(id);
     if (!ok) {
       setError('删除分享失败，请稍后重试。');
+      notify.error('删除分享失败', '请稍后重试。');
       return;
     }
     setShareLinks((prev) => prev.filter((item) => item.id !== id));
+    notify.success('已取消这条分享');
   };
 
   const handleCreate = async () => {
@@ -115,6 +120,7 @@ export function ResourceShareModal({
         const existing = spaceShareLinks.find((link) => link.team_id === selectedTeamId);
         if (existing) {
           setLatestResult({ mode: 'space', value: `该资源已经分享到「${teamMap.get(selectedTeamId)?.name || '当前空间'}」` });
+          notify.info('这个空间已经分享过了');
           return;
         }
         const created = await shareService.createShareLink(
@@ -129,6 +135,7 @@ export function ResourceShareModal({
         }
         setShareLinks((prev) => dedupeLinks([created, ...prev]));
         setLatestResult({ mode: 'space', value: `已分享到「${teamMap.get(selectedTeamId)?.name || '所选空间'}」` });
+        notify.success('分享成功', `已分享到「${teamMap.get(selectedTeamId)?.name || '所选空间'}」`);
         return;
       }
 
@@ -147,6 +154,7 @@ export function ResourceShareModal({
       setShareLinks((prev) => dedupeLinks([created, ...prev]));
       setLatestResult({ mode: 'link', value: url });
       await handleCopy(url, 'latest');
+      notify.success('分享链接已生成', sharePassword.trim() ? '已为这条链接设置访问密码。' : '拿到链接即可访问。');
     } finally {
       setIsBusy(false);
     }
@@ -154,7 +162,7 @@ export function ResourceShareModal({
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="w-full max-w-5xl rounded-3xl bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+      <div className="app-modal-enter app-soft-surface w-full max-w-5xl rounded-3xl bg-white" onClick={(event) => event.stopPropagation()}>
         <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           <div>
             <div className="text-lg font-semibold text-slate-900">分享资源</div>

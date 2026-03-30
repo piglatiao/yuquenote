@@ -528,7 +528,15 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'PATCH' && /^\/api\/users\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
     const userId = decodeURIComponent(url.pathname.replace('/api/users/', ''));
+    if (currentUser.id !== userId) {
+      json(res, 403, { error: '只能修改当前登录账号的资料。' });
+      return;
+    }
+
     const body = await readJsonBody(req);
     const existing = getUserById(userId);
     if (!existing) {
@@ -536,12 +544,74 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    db.prepare('UPDATE users SET nickname = ?, avatar_url = ?, updated_at = ? WHERE id = ?').run(
-      body.nickname ?? existing.nickname,
-      body.avatar_url ?? existing.avatar_url,
-      now(),
-      userId,
-    );
+    const nextNickname =
+      body.nickname !== undefined
+        ? String(body.nickname || '').trim()
+        : existing.nickname;
+    const nextAvatarUrl =
+      body.avatar_url !== undefined
+        ? sanitizeNullable(body.avatar_url)
+        : existing.avatar_url;
+    const nextEmail =
+      body.email !== undefined
+        ? String(body.email || '').trim().toLowerCase()
+        : existing.email;
+    const requestedPassword =
+      body.new_password !== undefined
+        ? String(body.new_password || '')
+        : body.password !== undefined
+          ? String(body.password || '')
+          : null;
+    const currentPassword = String(body.current_password || '');
+
+    if (!nextNickname) {
+      json(res, 400, { error: '昵称不能为空。' });
+      return;
+    }
+
+    if (!nextEmail) {
+      json(res, 400, { error: '邮箱不能为空。' });
+      return;
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      json(res, 400, { error: '邮箱格式不正确。' });
+      return;
+    }
+
+    if (nextEmail !== existing.email) {
+      const duplicate = db.prepare('SELECT id FROM users WHERE email = ? AND id <> ?').get(nextEmail, userId);
+      if (duplicate) {
+        json(res, 409, { error: '该邮箱已被其他账号使用。' });
+        return;
+      }
+    }
+
+    let nextPasswordHash = existing.password_hash;
+    if (requestedPassword !== null) {
+      if (!currentPassword) {
+        json(res, 400, { error: '修改密码前请先输入当前密码。' });
+        return;
+      }
+
+      if (!verifyPassword(currentPassword, existing.password_hash)) {
+        json(res, 400, { error: '当前密码不正确。' });
+        return;
+      }
+
+      if (requestedPassword.length < 6) {
+        json(res, 400, { error: '新密码至少需要 6 位。' });
+        return;
+      }
+
+      nextPasswordHash = hashPassword(requestedPassword);
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET email = ?, nickname = ?, avatar_url = ?, password_hash = ?, updated_at = ?
+      WHERE id = ?
+    `).run(nextEmail, nextNickname, nextAvatarUrl, nextPasswordHash, now(), userId);
 
     json(res, 200, { user: publicUser(getUserById(userId)) });
     return;

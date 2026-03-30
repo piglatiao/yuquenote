@@ -20,17 +20,17 @@ import {
   Settings,
   Star,
   Trash2,
-  UserPlus,
   Users,
   X,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import NameInputModal from './NameInputModal';
 import ProfileSettingsUploadModal from './ProfileSettingsUploadModal';
 import { authService } from '../lib/authApi';
 import { publicResourceService, teamService } from '../lib/databaseApi';
 import type { DocTreeItem } from '../lib/documentsApi';
+import { notify } from '../lib/notify';
 import type { PublicDocumentSummary, PublicFileSummary, Team, TeamInvitation, User } from '../lib/types';
-import { useNavigate } from 'react-router-dom';
 
 interface WorkspaceSidebarProps {
   onDocSelect: (doc: DocTreeItem) => void;
@@ -129,12 +129,16 @@ export default function WorkspaceSidebar({
   const [showCreateSpaceDialog, setShowCreateSpaceDialog] = useState(false);
   const [draftSpaceName, setDraftSpaceName] = useState('');
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showJoinSpaceDialog, setShowJoinSpaceDialog] = useState(false);
+  const [draftJoinSpaceCode, setDraftJoinSpaceCode] = useState('');
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
+  const [isJoiningSpace, setIsJoiningSpace] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
   const [copiedNotificationKey, setCopiedNotificationKey] = useState('');
   const [menuError, setMenuError] = useState('');
+  const [joinSpaceError, setJoinSpaceError] = useState('');
   const [notificationError, setNotificationError] = useState('');
   const [activeTeamMemberCount, setActiveTeamMemberCount] = useState(0);
   const [activeTeamOwner, setActiveTeamOwner] = useState<User | null>(null);
@@ -244,6 +248,7 @@ export default function WorkspaceSidebar({
   const contextTarget = contextMenu ? docMap.get(contextMenu.docId) || null : null;
   const createParentId = selectedTreeNode?.icon === 'folder' ? selectedTreeNode.id : selectedTreeNode?.parent_id ?? null;
   const workspaceSubLabel = activeWorkspaceTeam?.name || '个人空间';
+  const activeWorkspaceManageLabel = activeWorkspaceTeam?.is_owner ? '空间管理' : '空间总览';
   const isDocumentLikeTab = activeTab === 'docs' || activeTab === 'star';
 
   useEffect(() => {
@@ -401,6 +406,9 @@ export default function WorkspaceSidebar({
     setNotificationMenuOpen(false);
     setShowCreateSpaceDialog(false);
     setShowProfileModal(false);
+    setShowJoinSpaceDialog(false);
+    setDraftJoinSpaceCode('');
+    setJoinSpaceError('');
   }, [user?.id]);
 
   const toggleExpand = (id: string) => {
@@ -518,6 +526,7 @@ export default function WorkspaceSidebar({
       const created = await teamService.createTeam(name);
       if (!created) {
         setMenuError('创建空间失败');
+        notify.error('创建空间失败', '请稍后重试。');
         return;
       }
 
@@ -527,6 +536,11 @@ export default function WorkspaceSidebar({
       setWorkspaceMenuOpen(false);
       onEnterTeamSpace(created);
       onTabChange('docs');
+      notify.success('空间已创建', `已切换到「${created.name}」。`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '创建空间失败';
+      setMenuError(message);
+      notify.error('创建空间失败', message);
     } finally {
       setIsCreatingSpace(false);
     }
@@ -546,11 +560,53 @@ export default function WorkspaceSidebar({
 
     if (result.error) {
       setMenuError(result.error);
+      notify.error('切换账号失败', result.error);
       return;
     }
 
     onSessionChange();
     setAccountMenuOpen(false);
+    const nextAccount = accounts.find((account) => account.id === accountId);
+    notify.success('已切换账号', nextAccount?.nickname || nextAccount?.email || '当前账号');
+  };
+
+  const handleJoinSpaceByCode = async () => {
+    const nextCode = draftJoinSpaceCode.trim().toUpperCase();
+    if (!nextCode) {
+      setJoinSpaceError('请输入空间邀请码。');
+      return;
+    }
+
+    setIsJoiningSpace(true);
+    setJoinSpaceError('');
+
+    try {
+      const joinedTeam = await teamService.joinByInviteCode(nextCode);
+      if (!joinedTeam) {
+        setJoinSpaceError('加入空间失败，请检查邀请码后重试。');
+        notify.error('加入空间失败', '请检查邀请码后重试。');
+        return;
+      }
+
+      setTeams((current) => {
+        if (current.some((team) => team.id === joinedTeam.id)) {
+          return current;
+        }
+        return [joinedTeam, ...current];
+      });
+      setDraftJoinSpaceCode('');
+      setShowJoinSpaceDialog(false);
+      setAccountMenuOpen(false);
+      onEnterTeamSpace(joinedTeam);
+      onTabChange('docs');
+      notify.success('已加入空间', joinedTeam.name);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '邀请码无效或已失效。';
+      setJoinSpaceError(message);
+      notify.error('加入空间失败', message);
+    } finally {
+      setIsJoiningSpace(false);
+    }
   };
 
   const handleAcceptInvitation = async (invitation: TeamInvitation) => {
@@ -561,6 +617,7 @@ export default function WorkspaceSidebar({
       const joinedTeam = await teamService.acceptInvitation(invitation.id);
       if (!joinedTeam) {
         setNotificationError('接受邀请失败');
+        notify.error('接受邀请失败', '请稍后重试。');
         return;
       }
 
@@ -574,8 +631,11 @@ export default function WorkspaceSidebar({
       setNotificationMenuOpen(false);
       onEnterTeamSpace(joinedTeam);
       onTabChange('docs');
+      notify.success('已加入空间', joinedTeam.name);
     } catch (error) {
-      setNotificationError(error instanceof Error ? error.message : '接受邀请失败');
+      const message = error instanceof Error ? error.message : '接受邀请失败';
+      setNotificationError(message);
+      notify.error('接受邀请失败', message);
     } finally {
       setBusyInvitationId(null);
     }
@@ -589,12 +649,16 @@ export default function WorkspaceSidebar({
       const ok = await teamService.rejectInvitation(invitationId);
       if (!ok) {
         setNotificationError('拒绝邀请失败');
+        notify.error('忽略邀请失败', '请稍后重试。');
         return;
       }
 
       setPendingInvitations((current) => current.filter((item) => item.id !== invitationId));
+      notify.success('已忽略邀请');
     } catch (error) {
-      setNotificationError(error instanceof Error ? error.message : '拒绝邀请失败');
+      const message = error instanceof Error ? error.message : '拒绝邀请失败';
+      setNotificationError(message);
+      notify.error('忽略邀请失败', message);
     } finally {
       setBusyInvitationId(null);
     }
@@ -605,9 +669,11 @@ export default function WorkspaceSidebar({
       await navigator.clipboard.writeText(`${window.location.origin}/share/${shareToken}`);
       setCopiedNotificationKey(key);
       window.setTimeout(() => setCopiedNotificationKey(''), 1800);
+      notify.copied('分享链接已复制');
     } catch {
       setCopiedNotificationKey('');
       setNotificationError('复制分享链接失败');
+      notify.error('复制失败', '请检查浏览器剪贴板权限。');
     }
   };
 
@@ -623,7 +689,7 @@ export default function WorkspaceSidebar({
 
   return (
     <>
-      <aside className="relative flex h-full min-h-0 w-[244px] min-w-[244px] shrink-0 flex-col overflow-visible border-r border-slate-200 bg-[#f7f5f1] lg:w-[256px] lg:min-w-[256px]">
+      <aside className="app-page-enter relative flex h-full min-h-0 w-[244px] min-w-[244px] shrink-0 flex-col overflow-visible border-r border-slate-200 bg-[#f7f5f1] lg:w-[256px] lg:min-w-[256px]">
         <div className="border-b border-slate-200 px-3 py-3">
           <div className="flex items-center gap-2">
             <div ref={workspaceMenuRef} className="relative flex-1">
@@ -647,7 +713,7 @@ export default function WorkspaceSidebar({
               </button>
 
               {workspaceMenuOpen && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[min(264px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
+                <div className="app-modal-enter app-soft-surface absolute left-0 top-[calc(100%+8px)] z-50 w-[min(264px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl">
                   {activeWorkspaceTeam && (
                     <div className="-mx-1 mb-5 rounded-[24px] border border-slate-200/80 bg-gradient-to-b from-slate-50 to-white p-3.5 shadow-[0_10px_24px_rgba(15,23,42,0.08)]">
                       <div className="flex items-start gap-3">
@@ -679,14 +745,15 @@ export default function WorkspaceSidebar({
                               <span className="ml-1 text-xs font-normal text-slate-400">/{activeWorkspaceTeam.member_limit ?? 10}</span>
                             </div>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => openSpaceManagement(activeWorkspaceTeam.id, 'members')}
-                            className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-slate-600 transition hover:text-slate-900"
-                          >
-                            <UserPlus className="h-3.5 w-3.5" />
-                            邀请成员
-                          </button>
+                          {activeWorkspaceTeam.is_owner ? (
+                            <button
+                              type="button"
+                              onClick={() => openSpaceManagement(activeWorkspaceTeam.id, 'members')}
+                              className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-slate-600 transition hover:text-slate-900"
+                            >
+                              管理成员
+                            </button>
+                          ) : null}
                         </div>
 
                         <div className="mt-3 border-t border-slate-100 pt-3">
@@ -715,7 +782,7 @@ export default function WorkspaceSidebar({
                           className="mt-3 inline-flex w-full items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
                         >
                           <Settings className="h-4 w-4" />
-                          空间管理
+                          {activeWorkspaceManageLabel}
                         </button>
                       </div>
                     </div>
@@ -815,7 +882,7 @@ export default function WorkspaceSidebar({
                   }
                 }}
                 className="relative rounded-xl p-2 text-slate-500 transition hover:bg-white/80 hover:text-slate-700"
-                title="消息"
+                aria-label="消息"
               >
                 <Bell className="h-5 w-5" />
                 {notificationBadgeCount > 0 ? (
@@ -826,7 +893,7 @@ export default function WorkspaceSidebar({
               </button>
 
               {notificationMenuOpen ? (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-50 max-h-[78vh] w-[min(420px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                <div className="app-modal-enter app-soft-surface absolute left-0 top-[calc(100%+8px)] z-50 max-h-[78vh] w-[min(420px,calc(100vw-16px))] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
                   <div className="rounded-2xl bg-slate-50 px-4 py-4">
                     <div className="flex items-center justify-between gap-3">
                       <div>
@@ -994,7 +1061,7 @@ export default function WorkspaceSidebar({
               </button>
 
               {accountMenuOpen && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-[min(320px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+                <div className="app-modal-enter app-soft-surface absolute left-0 top-[calc(100%+8px)] z-50 w-[min(320px,calc(100vw-16px))] max-w-[calc(100vw-16px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
                   <div className="rounded-2xl bg-slate-50 px-4 py-4">
                     <div className="text-sm font-semibold text-slate-900">{user?.nickname || '当前账号'}</div>
                     <div className="mt-1 text-sm text-slate-500">{user?.email}</div>
@@ -1011,6 +1078,19 @@ export default function WorkspaceSidebar({
                     >
                       <Edit3 className="h-4 w-4" />
                       编辑个人资料
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowJoinSpaceDialog(true);
+                        setDraftJoinSpaceCode('');
+                        setJoinSpaceError('');
+                        setAccountMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <Users className="h-4 w-4" />
+                      加入空间
                     </button>
                   </div>
 
@@ -1084,7 +1164,7 @@ export default function WorkspaceSidebar({
               type="button"
               onClick={() => onCreateDoc(createParentId)}
               className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-50"
-              title="新建笔记"
+              aria-label="新建笔记"
             >
               <Plus className="h-5 w-5" />
             </button>
@@ -1114,7 +1194,7 @@ export default function WorkspaceSidebar({
         </nav>
 
         <div className="mt-3 flex-1 overflow-y-auto px-3 pb-4">
-          <div className="rounded-[24px] bg-[#f2efe8] px-2 py-2">
+          <div className="app-section-enter rounded-[24px] bg-[#f2efe8] px-2 py-2">
             <button
               type="button"
               onClick={() => setKnowledgeBaseOpen((prev) => !prev)}
@@ -1154,7 +1234,7 @@ export default function WorkspaceSidebar({
         {contextMenu && (
           <div
             ref={contextMenuRef}
-            className="fixed z-[80] min-w-[160px] rounded-2xl border border-slate-200 bg-white p-1 shadow-2xl"
+            className="app-modal-enter app-soft-surface fixed z-[80] min-w-[160px] rounded-2xl border border-slate-200 bg-white p-1 shadow-2xl"
             style={{ left: contextMenu.x, top: contextMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -1242,6 +1322,30 @@ export default function WorkspaceSidebar({
         onCancel={() => {
           if (isCreatingSpace) return;
           setShowCreateSpaceDialog(false);
+        }}
+      />
+
+      <NameInputModal
+        isOpen={showJoinSpaceDialog}
+        title="加入空间"
+        description="输入空间邀请码后即可加入对应空间。"
+        label="空间邀请码"
+        value={draftJoinSpaceCode}
+        error={joinSpaceError}
+        placeholder="请输入邀请码"
+        confirmText={isJoiningSpace ? '加入中...' : '加入空间'}
+        onChange={(value) => {
+          setDraftJoinSpaceCode(value.replace(/\s+/g, '').toUpperCase());
+          if (joinSpaceError) {
+            setJoinSpaceError('');
+          }
+        }}
+        onConfirm={() => void handleJoinSpaceByCode()}
+        onCancel={() => {
+          if (isJoiningSpace) return;
+          setShowJoinSpaceDialog(false);
+          setDraftJoinSpaceCode('');
+          setJoinSpaceError('');
         }}
       />
 

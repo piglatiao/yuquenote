@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { ApiError } from '../lib/api';
 import { shareService } from '../lib/databaseApi';
+import { notify } from '../lib/notify';
 import type { Document, FileRecord, SharedResourcePayload } from '../lib/types';
 
 interface ErrorState {
@@ -152,6 +153,9 @@ export default function SharePageAccess() {
         setDocument(nextPayload.document ?? null);
         setFile(nextPayload.file ?? null);
         setRequiresPassword(false);
+        if (submittedPassword) {
+          notify.success('验证通过', '已解锁当前分享内容。');
+        }
       } catch (loadError) {
         if (loadError instanceof ApiError) {
           if (loadError.status === 428 || loadError.message === 'This share link requires a password.') {
@@ -161,13 +165,17 @@ export default function SharePageAccess() {
             setRequiresPassword(true);
             setPasswordError('访问密码错误，请重新输入。');
             setError(null);
+            notify.error('访问密码错误', '请重新输入后继续查看。');
           } else {
             setError(buildErrorState(loadError.status, loadError.message));
+            notify.error('分享内容加载失败', loadError.message);
           }
         } else if (loadError instanceof Error) {
           setError(buildErrorState(500, loadError.message));
+          notify.error('分享内容加载失败', loadError.message);
         } else {
           setError(buildErrorState(500, '分享内容加载失败。'));
+          notify.error('分享内容加载失败', '请稍后重试。');
         }
       } finally {
         setIsLoading(false);
@@ -179,7 +187,7 @@ export default function SharePageAccess() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50">
+      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50">
         <div className="text-center">
           <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-blue-500/30 border-t-blue-500" />
           <p className="text-gray-500">正在加载分享内容...</p>
@@ -190,8 +198,8 @@ export default function SharePageAccess() {
 
   if (error || (!document && !file) || !payload) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-        <div className="w-full max-w-lg rounded-[32px] border border-slate-200 bg-white p-8 text-center shadow-sm">
+      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="app-card-hover app-soft-surface w-full max-w-lg rounded-[32px] border border-slate-200 bg-white p-8 text-center shadow-sm">
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
             <ShieldAlert className="h-8 w-8" />
           </div>
@@ -215,8 +223,8 @@ export default function SharePageAccess() {
 
   if (requiresPassword) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-        <div className="w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
+      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="app-card-hover app-soft-surface w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
           <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
             <Lock className="h-8 w-8" />
           </div>
@@ -263,8 +271,8 @@ export default function SharePageAccess() {
   const VisibilityIcon = visibility.icon;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
+    <div className="app-page-enter min-h-screen bg-slate-50">
+      <header className="app-soft-surface border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
@@ -293,7 +301,7 @@ export default function SharePageAccess() {
 
       <main className="mx-auto max-w-5xl px-4 py-8">
         {document && (
-          <div className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
+          <div className="app-card-hover app-section-enter overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-8 py-6">
               <h1 className="text-3xl font-bold text-slate-900">{document.title}</h1>
               <p className="mt-3 text-sm text-slate-500">
@@ -306,7 +314,7 @@ export default function SharePageAccess() {
         )}
 
         {file && (
-          <div className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
+          <div className="app-card-hover app-section-enter overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-4 border-b border-slate-100 px-8 py-6 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
                 <div className="flex items-center gap-3">
