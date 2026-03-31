@@ -739,6 +739,21 @@ export function listDiscoverableTeams(userId) {
   return rows.map(teamRowToModel);
 }
 
+export function listDissolvedTeams(userId) {
+  const rows = db.prepare(`
+    SELECT
+      t.*,
+      tm.status AS membership_status,
+      CASE WHEN t.owner_user_id = ? THEN 1 ELSE 0 END AS is_owner
+    FROM teams t
+    LEFT JOIN team_members tm ON tm.team_id = t.id AND tm.user_id = ?
+    WHERE t.status = 'dissolved' AND t.retention_until IS NOT NULL AND (t.owner_user_id = ? OR tm.user_id = ?)
+    ORDER BY COALESCE(t.dissolved_at, t.created_at) DESC
+  `).all(userId, userId, userId, userId);
+
+  return rows.map(teamRowToModel);
+}
+
 export function listTeamMembers(teamId, status = 'approved') {
   const rows = db.prepare(`
     SELECT

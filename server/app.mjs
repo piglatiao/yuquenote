@@ -43,6 +43,7 @@ import {
   listTeamJoinRequests,
   listTeamMembers,
   listTeamsForUser,
+  listDissolvedTeams,
   listTodos,
   mimeTypeForExtension,
   newId,
@@ -205,8 +206,9 @@ function canAccessDissolvedTeamRecycle(userId, teamId) {
     return true;
   }
 
+  // 只要是原团队成员（无论当前状态）都可以访问回收站
   const membership = getTeamMembership(teamId, userId);
-  return membership?.status === 'approved';
+  return !!membership;
 }
 
 function approveMembership(teamId, userId) {
@@ -906,6 +908,14 @@ async function handleApi(req, res, url) {
     }
 
     json(res, 200, listTeamsForUser(currentUser.id));
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/teams/dissolved') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, listDissolvedTeams(currentUser.id));
     return;
   }
 

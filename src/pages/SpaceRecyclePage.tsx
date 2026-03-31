@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   File,
@@ -73,6 +73,7 @@ function resolveFileIcon(type: FileRecord['type']) {
 export default function SpaceRecyclePage() {
   const navigate = useNavigate();
   const { teamId = '' } = useParams();
+  const [searchParams] = useSearchParams();
   const [payload, setPayload] = useState<TeamRecyclePayload | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -82,6 +83,15 @@ export default function SpaceRecyclePage() {
     resourceName: string;
   } | null>(null);
   const [isSavingTransfer, setIsSavingTransfer] = useState(false);
+
+  const handleBack = () => {
+    // 检查是否从回收站列表页面进入
+    if (searchParams.get('from') === 'list') {
+      navigate(-1);
+    } else {
+      navigate('/');
+    }
+  };
 
   const load = async () => {
     if (!teamId) {
@@ -156,11 +166,11 @@ export default function SpaceRecyclePage() {
             <div className="flex min-w-0 items-center gap-4">
               <button
                 type="button"
-                onClick={() => navigate('/')}
+                onClick={handleBack}
                 className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
               >
                 <ArrowLeft className="h-4 w-4" />
-                返回首页
+                返回上一级
               </button>
 
               <div className="hidden h-10 w-px bg-slate-200 lg:block" />

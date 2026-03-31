@@ -203,6 +203,10 @@ export const teamService = {
     return apiRequest<Team[]>('/teams');
   },
 
+  async getDissolvedTeams(): Promise<Team[]> {
+    return apiRequest<Team[]>('/teams/dissolved');
+  },
+
   async getDiscoverableTeams(): Promise<Team[]> {
     return apiRequest<Team[]>('/teams?scope=discover');
   },

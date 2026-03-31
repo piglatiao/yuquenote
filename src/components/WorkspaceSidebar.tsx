@@ -32,6 +32,7 @@ import { notificationService, publicResourceService, teamService } from '../lib/
 import type { DocTreeItem } from '../lib/documentsApi';
 import { notify } from '../lib/notify';
 import type { PublicDocumentSummary, PublicFileSummary, Team, TeamInvitation, User, UserNotification } from '../lib/types';
+import { Archive } from 'lucide-react';
 
 interface WorkspaceSidebarProps {
   onDocSelect: (doc: DocTreeItem) => void;
@@ -123,6 +124,7 @@ export default function WorkspaceSidebar({
   const [notificationMenuOpen, setNotificationMenuOpen] = useState(false);
   const [knowledgeBaseOpen, setKnowledgeBaseOpen] = useState(true);
   const [teams, setTeams] = useState<Team[]>([]);
+  const [dissolvedTeams, setDissolvedTeams] = useState<Team[]>([]);
   const [accounts, setAccounts] = useState<User[]>([]);
   const [pendingInvitations, setPendingInvitations] = useState<TeamInvitation[]>([]);
   const [publicDocuments, setPublicDocuments] = useState<PublicDocumentSummary[]>([]);
@@ -345,6 +347,17 @@ export default function WorkspaceSidebar({
     };
 
     void loadAccounts();
+
+    const loadDissolvedTeams = async () => {
+      try {
+        const dissolved = await teamService.getDissolvedTeams();
+        setDissolvedTeams(dissolved);
+      } catch {
+        // 静默失败，不影响主功能
+      }
+    };
+
+    void loadDissolvedTeams();
   }, [accountMenuOpen, user?.id]);
 
   const loadNotificationFeed = async () => {
@@ -1283,6 +1296,62 @@ export default function WorkspaceSidebar({
                       加入空间
                     </button>
                   </div>
+
+                  {dissolvedTeams.length > 0 && (
+                    <div className="mt-3">
+                      <div className="flex items-center justify-between px-3">
+                        <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">回收站</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.open('/spaces/recycle', '_blank', 'noopener,noreferrer');
+                            setAccountMenuOpen(false);
+                          }}
+                          className="text-xs text-emerald-600 hover:text-emerald-700"
+                        >
+                          查看全部
+                        </button>
+                      </div>
+                      <div className="mt-2 space-y-1">
+                        {dissolvedTeams.slice(0, 3).map((team) => (
+                          <button
+                            key={team.id}
+                            type="button"
+                            onClick={() => {
+                              window.open(`/spaces/${encodeURIComponent(team.id)}/recycle`, '_blank', 'noopener,noreferrer');
+                              setAccountMenuOpen(false);
+                            }}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+                          >
+                            <Archive className="h-4 w-4 text-slate-400" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate text-sm font-medium text-slate-900">{team.name}</div>
+                              <div className="truncate text-xs text-slate-500">
+                                保留至 {new Date(team.retention_until!).toLocaleDateString('zh-CN')}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                        {dissolvedTeams.length > 3 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.open('/spaces/recycle', '_blank', 'noopener,noreferrer');
+                              setAccountMenuOpen(false);
+                            }}
+                            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm text-emerald-700 hover:bg-emerald-50"
+                          >
+                            <Archive className="h-4 w-4" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-medium">
+                                还有 {dissolvedTeams.length - 3} 个已解散空间...
+                              </div>
+                            </div>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mt-4 border-t border-slate-100 pt-4">
                     <div className="px-3 text-xs font-medium uppercase tracking-[0.18em] text-slate-400">切换账号</div>
