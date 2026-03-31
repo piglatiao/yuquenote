@@ -1,15 +1,19 @@
 import { ApiError, apiRequest, toJsonRequest } from './api';
 import type {
+  Document,
   FileRecord,
   Folder,
   PublicDocumentSummary,
   PublicFileSummary,
   ResourcePermission,
+  ShareSaveResult,
   ShareLink,
   SharedResourcePayload,
   Team,
+  TeamRecyclePayload,
   TeamInvitation,
   TeamMember,
+  UserNotification,
   User,
 } from './types';
 
@@ -163,6 +167,27 @@ export const shareService = {
     );
   },
 
+  async saveSharedResource(
+    shareToken: string,
+    options?: {
+      password?: string;
+      target_document_parent_id?: string | null;
+      target_file_folder_id?: string | null;
+    },
+  ): Promise<ShareSaveResult> {
+    return apiRequest<ShareSaveResult>(
+      `/share-links/token/${encodeURIComponent(shareToken)}/save`,
+      toJsonRequest(
+        {
+          password: options?.password || null,
+          target_document_parent_id: options?.target_document_parent_id || null,
+          target_file_folder_id: options?.target_file_folder_id || null,
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+
   async deleteShareLink(id: string): Promise<boolean> {
     try {
       await apiRequest<void>(`/share-links/${id}`, { method: 'DELETE' });
@@ -217,6 +242,17 @@ export const teamService = {
     }
   },
 
+  async leaveTeam(teamId: string): Promise<boolean> {
+    await apiRequest<{ ok: true }>(`/teams/${encodeURIComponent(teamId)}/leave`, { method: 'POST' });
+    return true;
+  },
+
+  async dissolveTeam(teamId: string): Promise<{ ok: boolean; retention_until: string | null }> {
+    return apiRequest<{ ok: boolean; retention_until: string | null }>(`/teams/${encodeURIComponent(teamId)}/dissolve`, {
+      method: 'POST',
+    });
+  },
+
   async requestToJoin(teamId: string): Promise<boolean> {
     try {
       await apiRequest<{ ok: true }>(`/teams/${encodeURIComponent(teamId)}/join-requests`, { method: 'POST' });
@@ -228,6 +264,14 @@ export const teamService = {
 
   async getMembers(teamId: string): Promise<TeamMember[]> {
     return apiRequest<TeamMember[]>(`/teams/${encodeURIComponent(teamId)}/members`);
+  },
+
+  async removeMember(teamId: string, memberUserId: string): Promise<boolean> {
+    await apiRequest<{ ok: true }>(
+      `/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberUserId)}/remove`,
+      { method: 'POST' },
+    );
+    return true;
   },
 
   async getJoinRequests(teamId: string): Promise<TeamMember[]> {
@@ -328,6 +372,62 @@ export const teamService = {
     } catch {
       return false;
     }
+  },
+
+  async sendNotification(teamId: string, payload: { title?: string; content: string }): Promise<boolean> {
+    await apiRequest<{ ok: true }>(
+      `/teams/${encodeURIComponent(teamId)}/notifications`,
+      toJsonRequest(payload, { method: 'POST' }),
+    );
+    return true;
+  },
+
+  async getRecycle(teamId: string): Promise<TeamRecyclePayload> {
+    return apiRequest<TeamRecyclePayload>(`/teams/${encodeURIComponent(teamId)}/recycle`);
+  },
+
+  async saveRecycleDocument(
+    teamId: string,
+    documentId: string,
+    targetDocumentParentId?: string | null,
+  ): Promise<{ ok: boolean; document?: Document | null }> {
+    return apiRequest<{ ok: boolean; document?: Document | null }>(
+      `/teams/${encodeURIComponent(teamId)}/recycle/documents/${encodeURIComponent(documentId)}/save`,
+      toJsonRequest(
+        {
+          target_document_parent_id: targetDocumentParentId || null,
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+
+  async saveRecycleFile(
+    teamId: string,
+    fileId: string,
+    targetFileFolderId?: string | null,
+  ): Promise<{ ok: boolean; file?: FileRecord | null }> {
+    return apiRequest<{ ok: boolean; file?: FileRecord | null }>(
+      `/teams/${encodeURIComponent(teamId)}/recycle/files/${encodeURIComponent(fileId)}/save`,
+      toJsonRequest(
+        {
+          target_file_folder_id: targetFileFolderId || null,
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+};
+
+export const notificationService = {
+  async getMine(): Promise<UserNotification[]> {
+    return apiRequest<UserNotification[]>('/notifications/mine');
+  },
+
+  async markRead(notificationId: string): Promise<UserNotification> {
+    return apiRequest<UserNotification>(`/notifications/${encodeURIComponent(notificationId)}/read`, {
+      method: 'PATCH',
+    });
   },
 };
 

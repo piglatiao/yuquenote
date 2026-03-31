@@ -14,6 +14,7 @@ import {
   Video,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import ShareTransferModal from './ShareTransferModal';
 import { documentService } from '../lib/documentsApi';
 import { fileService, publicResourceService, shareService, teamService } from '../lib/databaseApi';
 import { notify } from '../lib/notify';
@@ -104,6 +105,12 @@ export default function ShareCenterPanel({
   const [error, setError] = useState('');
   const [busyKey, setBusyKey] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
+  const [transferTarget, setTransferTarget] = useState<{
+    resourceType: 'document' | 'file';
+    resourceName: string;
+    shareToken: string;
+  } | null>(null);
+  const [isSavingTransfer, setIsSavingTransfer] = useState(false);
 
   const isPersonalMode = !currentWorkspaceTeamId;
   const activeWorkspaceLabel = workspaceLabel || (currentWorkspaceTeamId ? '当前空间' : '个人空间');
@@ -233,6 +240,32 @@ export default function ShareCenterPanel({
     }
   };
 
+  const handleTransferConfirm = async (targetId: string | null) => {
+    if (!transferTarget) {
+      return;
+    }
+
+    setIsSavingTransfer(true);
+    try {
+      const result = await shareService.saveSharedResource(transferTarget.shareToken, {
+        target_document_parent_id: transferTarget.resourceType === 'document' ? targetId : null,
+        target_file_folder_id: transferTarget.resourceType === 'file' ? targetId : null,
+      });
+
+      notify.success(
+        '转存成功',
+        transferTarget.resourceType === 'document'
+          ? result.document?.title || '已保存到我的笔记'
+          : result.file?.name || '已保存到我的文件',
+      );
+      setTransferTarget(null);
+    } catch (transferError) {
+      notify.error('转存失败', transferError instanceof Error ? transferError.message : '请稍后重试。');
+    } finally {
+      setIsSavingTransfer(false);
+    }
+  };
+
   return (
     <div className="app-page-enter h-full overflow-y-auto bg-slate-50">
       <div className="mx-auto flex max-w-7xl flex-col gap-6 px-6 py-6">
@@ -349,6 +382,21 @@ export default function ShareCenterPanel({
                             <ExternalLink className="h-4 w-4" />
                             新窗口打开
                           </a>
+                          {!isPersonalMode ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTransferTarget({
+                                  resourceType: 'document',
+                                  resourceName: document.title,
+                                  shareToken: document.share_token,
+                                })
+                              }
+                              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-100"
+                            >
+                              转存
+                            </button>
+                          ) : null}
                           {canCancel && document.share_link_id ? (
                             <button
                               type="button"
@@ -454,6 +502,21 @@ export default function ShareCenterPanel({
                             <ExternalLink className="h-4 w-4" />
                             新窗口打开
                           </a>
+                          {!isPersonalMode ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTransferTarget({
+                                  resourceType: 'file',
+                                  resourceName: file.name,
+                                  shareToken: file.share_token,
+                                })
+                              }
+                              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-100"
+                            >
+                              转存
+                            </button>
+                          ) : null}
                           {canCancel && file.share_link_id ? (
                             <button
                               type="button"
@@ -475,6 +538,20 @@ export default function ShareCenterPanel({
           </div>
         )}
       </div>
+
+      <ShareTransferModal
+        isOpen={!!transferTarget}
+        resourceType={transferTarget?.resourceType || 'document'}
+        resourceName={transferTarget?.resourceName || ''}
+        isSubmitting={isSavingTransfer}
+        onClose={() => {
+          if (isSavingTransfer) {
+            return;
+          }
+          setTransferTarget(null);
+        }}
+        onConfirm={(targetId) => void handleTransferConfirm(targetId)}
+      />
     </div>
   );
 }

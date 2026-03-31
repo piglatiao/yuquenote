@@ -15,6 +15,7 @@ import {
   Users,
   Video,
 } from 'lucide-react';
+import ShareTransferModal from '../components/ShareTransferModal';
 import { ApiError } from '../lib/api';
 import { shareService } from '../lib/databaseApi';
 import { notify } from '../lib/notify';
@@ -131,6 +132,8 @@ export default function SharePageAccess() {
   const [submittedPassword, setSubmittedPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [requiresPassword, setRequiresPassword] = useState(false);
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [isSavingTransfer, setIsSavingTransfer] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -270,6 +273,31 @@ export default function SharePageAccess() {
   const visibility = visibilityMeta[payload.link.visibility] || visibilityMeta.link;
   const VisibilityIcon = visibility.icon;
 
+  const handleSaveSharedResource = async (targetId: string | null) => {
+    if (!token) {
+      return;
+    }
+
+    setIsSavingTransfer(true);
+    try {
+      const result = await shareService.saveSharedResource(token, {
+        password: submittedPassword || undefined,
+        target_document_parent_id: document ? targetId : null,
+        target_file_folder_id: file ? targetId : null,
+      });
+
+      notify.success(
+        '转存成功',
+        document ? result.document?.title || '已保存到我的笔记' : result.file?.name || '已保存到我的文件',
+      );
+      setShowTransferModal(false);
+    } catch (saveError) {
+      notify.error('转存失败', saveError instanceof Error ? saveError.message : '请稍后重试。');
+    } finally {
+      setIsSavingTransfer(false);
+    }
+  };
+
   return (
     <div className="app-page-enter min-h-screen bg-slate-50">
       <header className="app-soft-surface border-b border-slate-200 bg-white">
@@ -295,6 +323,13 @@ export default function SharePageAccess() {
                 {payload.team.name}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => setShowTransferModal(true)}
+              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100"
+            >
+              转存到我的{document ? '笔记' : '文件'}
+            </button>
           </div>
         </div>
       </header>
@@ -370,6 +405,20 @@ export default function SharePageAccess() {
           </div>
         )}
       </main>
+
+      <ShareTransferModal
+        isOpen={showTransferModal}
+        resourceType={document ? 'document' : 'file'}
+        resourceName={document?.title || file?.name || ''}
+        isSubmitting={isSavingTransfer}
+        onClose={() => {
+          if (isSavingTransfer) {
+            return;
+          }
+          setShowTransferModal(false);
+        }}
+        onConfirm={(targetId) => void handleSaveSharedResource(targetId)}
+      />
     </div>
   );
 }

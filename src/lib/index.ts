@@ -15,8 +15,11 @@ export type {
   TeamMember,
   ResourcePermission,
   SharedResourcePayload,
+  ShareSaveResult,
   PublicDocumentSummary,
   PublicFileSummary,
+  UserNotification,
+  TeamRecyclePayload,
   ApiResponse,
   UploadProgress,
   AuthState,
@@ -35,7 +38,15 @@ export type { DocTreeItem } from './documentsApi';
 export { commentService, todoService } from './servicesApi';
 
 // Database services
-export { folderService, fileService, shareService, teamService, resourcePermissionService, publicResourceService } from './databaseApi';
+export {
+  folderService,
+  fileService,
+  shareService,
+  teamService,
+  notificationService,
+  resourcePermissionService,
+  publicResourceService,
+} from './databaseApi';
 
 // Storage services
 export { storageService } from './storageApi';

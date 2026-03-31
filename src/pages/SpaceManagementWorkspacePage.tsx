@@ -12,16 +12,19 @@ import {
   ImagePlus,
   Link2,
   Loader2,
+  Megaphone,
   RefreshCw,
   Search,
   Settings,
   ShieldCheck,
   Upload,
+  UserMinus,
   UserPlus,
   Users,
   X,
   type LucideIcon,
 } from 'lucide-react';
+import ActionDialog from '../components/ActionDialog';
 import { apiRequest } from '../lib/api';
 import { authService } from '../lib/authApi';
 import { teamService } from '../lib/databaseApi';
@@ -185,6 +188,29 @@ function LegacySpaceManagementWorkspacePage() {
   const [isBusy, setIsBusy] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [error, setError] = useState('');
+  const announcementTitle = '';
+  const setAnnouncementTitle = (_value: string) => undefined;
+  const announcementContent = '';
+  const setAnnouncementContent = (_value: string) => undefined;
+  const isSendingAnnouncement = false;
+  const inviteQuery = '';
+  const setInviteQuery = (_value: string) => undefined;
+  const inviteCandidates: User[] = [];
+  const inviteFeedback = '';
+  const setInviteFeedback = (_value: string) => undefined;
+  const emailInvitations: TeamInvitation[] = [];
+  const codeInvitation: TeamInvitation | null = null;
+  const busyInviteCandidateId: string | null = null;
+  const busyInvitationId: string | null = null;
+  const isGeneratingInviteCode = false;
+  const isSearchingInviteCandidates = false;
+  const rejectedMembers: TeamMember[] = [];
+  const handleSendAnnouncement = async () => undefined;
+  const handleGenerateInviteCode = async () => undefined;
+  const handleCopyInviteCode = async () => undefined;
+  const handleInviteCandidate = async (_user: User) => undefined;
+  const handleRevokeInvitation = async (_invitationId: string) => undefined;
+  const handleRemoveMember = (_member: TeamMember) => undefined;
 
   const rawSection = searchParams.get('section');
   const activeSection: ManageSection =
@@ -611,6 +637,634 @@ function LegacySpaceManagementWorkspacePage() {
     </div>
   );
 
+  const renderLegacyManagedMembersSummary = () => (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-3">
+        <SpaceManageMetricCard
+          icon={Users}
+          label="空间成员"
+          value={approvedMembers.length}
+          detail="已经加入并可访问当前空间的成员数量"
+        />
+        <SpaceManageMetricCard
+          icon={UserPlus}
+          label="待审批"
+          value={joinRequests.length}
+          detail={isOwner ? '由空间创建者处理加入申请' : '仅空间创建者可以审批'}
+        />
+        <SpaceManageMetricCard
+          icon={ShieldCheck}
+          label="成员上限"
+          value={currentMemberLimit}
+          detail={`当前上限不能低于已加入成员数 ${approvedMembers.length}`}
+        />
+      </section>
+
+      {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间。'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      正在搜索可邀请成员...
+                    </div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">成员列表</div>
+            <div className="mt-1 text-sm text-slate-500">查看当前空间成员，并按昵称或邮箱搜索。</div>
+          </div>
+
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              placeholder="搜索成员昵称或邮箱"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="mt-4 rounded-[24px] bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+            没有匹配到成员。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredMembers.map((member) => {
+              const isSpaceOwner = member.user_id === team?.owner_user_id;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-col gap-3 rounded-[24px] border border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-medium text-slate-900">
+                      {member.user?.nickname || member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-slate-500">
+                      {member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400">加入时间：{formatManageDateTime(member.created_at)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SpaceManageStatusTag label={isSpaceOwner ? '空间创建者' : '空间成员'} />
+                    <SpaceManageStatusTag label="已加入" />
+                    {isOwner && !isSpaceOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-100"
+                      >
+                        <UserMinus className="h-4 w-4" />
+                        移出
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {rejectedMembers.length > 0 ? (
+          <div className="mt-5 text-sm text-slate-500">已处理的拒绝申请：{rejectedMembers.length} 条</div>
+        ) : null}
+      </section>
+    </div>
+  );
+
+  const renderLegacyManagedMembersA = () => (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-3">
+        <SpaceManageMetricCard
+          icon={Users}
+          label="空间成员"
+          value={approvedMembers.length}
+          detail="已加入并可访问当前空间的成员数量"
+        />
+        <SpaceManageMetricCard
+          icon={UserPlus}
+          label="待审批"
+          value={joinRequests.length}
+          detail={isOwner ? '由空间创建者审批加入申请' : '仅空间创建者可审批'}
+        />
+        <SpaceManageMetricCard
+          icon={ShieldCheck}
+          label="成员上限"
+          value={currentMemberLimit}
+          detail={`当前上限不能低于已加入成员数 ${approvedMembers.length}`}
+        />
+      </section>
+
+      {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">正在搜索可邀请成员...</div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">成员列表</div>
+            <div className="mt-1 text-sm text-slate-500">查看当前空间成员，并按昵称或邮箱搜索。</div>
+          </div>
+
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              placeholder="搜索成员昵称或邮箱"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="mt-4 rounded-[24px] bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+            没有匹配到成员。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredMembers.map((member) => {
+              const isSpaceOwner = member.user_id === team?.owner_user_id;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-col gap-3 rounded-[24px] border border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-medium text-slate-900">
+                      {member.user?.nickname || member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-slate-500">{member.user?.email || member.user_id}</div>
+                    <div className="mt-2 text-xs text-slate-400">加入时间：{formatManageDateTime(member.created_at)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SpaceManageStatusTag label={isSpaceOwner ? '空间所有者' : '空间成员'} />
+                    <SpaceManageStatusTag label="已加入" />
+                    {isOwner && !isSpaceOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-100"
+                      >
+                        <UserMinus className="h-4 w-4" />
+                        移出
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {rejectedMembers.length > 0 ? (
+          <div className="mt-5 text-sm text-slate-500">已处理的拒绝申请：{rejectedMembers.length} 条</div>
+        ) : null}
+      </section>
+    </div>
+  );
+
   const renderSettings = () => (
     <div className="space-y-6">
       <section>
@@ -725,6 +1379,634 @@ function LegacySpaceManagementWorkspacePage() {
             </div>
           </div>
         </div>
+      </section>
+    </div>
+  );
+
+  const renderLegacyManagedMembersDetailed = () => (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-3">
+        <SpaceManageMetricCard
+          icon={Users}
+          label="空间成员"
+          value={approvedMembers.length}
+          detail="已经加入并可访问当前空间的成员数量"
+        />
+        <SpaceManageMetricCard
+          icon={UserPlus}
+          label="待审批"
+          value={joinRequests.length}
+          detail={isOwner ? '由空间创建者处理加入申请' : '仅空间创建者可以审批'}
+        />
+        <SpaceManageMetricCard
+          icon={ShieldCheck}
+          label="成员上限"
+          value={currentMemberLimit}
+          detail={`当前上限不能低于已加入成员数 ${approvedMembers.length}`}
+        />
+      </section>
+
+      {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间。'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      正在搜索可邀请成员...
+                    </div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">成员列表</div>
+            <div className="mt-1 text-sm text-slate-500">查看当前空间成员，并按昵称或邮箱搜索。</div>
+          </div>
+
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              placeholder="搜索成员昵称或邮箱"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="mt-4 rounded-[24px] bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+            没有匹配到成员。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredMembers.map((member) => {
+              const isSpaceOwner = member.user_id === team?.owner_user_id;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-col gap-3 rounded-[24px] border border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-medium text-slate-900">
+                      {member.user?.nickname || member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-slate-500">
+                      {member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-2 text-xs text-slate-400">加入时间：{formatManageDateTime(member.created_at)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SpaceManageStatusTag label={isSpaceOwner ? '空间创建者' : '空间成员'} />
+                    <SpaceManageStatusTag label="已加入" />
+                    {isOwner && !isSpaceOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-100"
+                      >
+                        <UserMinus className="h-4 w-4" />
+                        移出
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {rejectedMembers.length > 0 ? (
+          <div className="mt-5 text-sm text-slate-500">已处理的拒绝申请：{rejectedMembers.length} 条</div>
+        ) : null}
+      </section>
+    </div>
+  );
+
+  const renderLegacyManagedMembersB = () => (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-3">
+        <SpaceManageMetricCard
+          icon={Users}
+          label="空间成员"
+          value={approvedMembers.length}
+          detail="已加入并可访问当前空间的成员数量"
+        />
+        <SpaceManageMetricCard
+          icon={UserPlus}
+          label="待审批"
+          value={joinRequests.length}
+          detail={isOwner ? '由空间创建者审批加入申请' : '仅空间创建者可审批'}
+        />
+        <SpaceManageMetricCard
+          icon={ShieldCheck}
+          label="成员上限"
+          value={currentMemberLimit}
+          detail={`当前上限不能低于已加入成员数 ${approvedMembers.length}`}
+        />
+      </section>
+
+      {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">正在搜索可邀请成员...</div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">成员列表</div>
+            <div className="mt-1 text-sm text-slate-500">查看当前空间成员，并按昵称或邮箱搜索。</div>
+          </div>
+
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              placeholder="搜索成员昵称或邮箱"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="mt-4 rounded-[24px] bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+            没有匹配到成员。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredMembers.map((member) => {
+              const isSpaceOwner = member.user_id === team?.owner_user_id;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-col gap-3 rounded-[24px] border border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-medium text-slate-900">
+                      {member.user?.nickname || member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-slate-500">{member.user?.email || member.user_id}</div>
+                    <div className="mt-2 text-xs text-slate-400">加入时间：{formatManageDateTime(member.created_at)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SpaceManageStatusTag label={isSpaceOwner ? '空间所有者' : '空间成员'} />
+                    <SpaceManageStatusTag label="已加入" />
+                    {isOwner && !isSpaceOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-100"
+                      >
+                        <UserMinus className="h-4 w-4" />
+                        移出
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {rejectedMembers.length > 0 ? (
+          <div className="mt-5 text-sm text-slate-500">已处理的拒绝申请：{rejectedMembers.length} 条</div>
+        ) : null}
       </section>
     </div>
   );
@@ -931,16 +2213,339 @@ export default function SpaceManagementWorkspacePage() {
   const [settingsCreatedAt, setSettingsCreatedAt] = useState('');
   const [settingsMemberLimit, setSettingsMemberLimit] = useState(String(DEFAULT_MEMBER_LIMIT));
   const [settingsFeedback, setSettingsFeedback] = useState('');
+  const [announcementTitle, setAnnouncementTitle] = useState('');
+  const [announcementContent, setAnnouncementContent] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isSendingAnnouncement, setIsSendingAnnouncement] = useState(false);
   const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
   const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
   const [busyInviteCandidateId, setBusyInviteCandidateId] = useState<string | null>(null);
   const [isGeneratingInviteCode, setIsGeneratingInviteCode] = useState(false);
   const [isSearchingInviteCandidates, setIsSearchingInviteCandidates] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    tone?: 'default' | 'danger';
+    confirmText?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [isConfirmingDialog, setIsConfirmingDialog] = useState(false);
   const [error, setError] = useState('');
+
+  const renderManagedMembers = () => (
+    <div className="space-y-6">
+      <section className="grid gap-4 md:grid-cols-3">
+        <SpaceManageMetricCard
+          icon={Users}
+          label="空间成员"
+          value={approvedMembers.length}
+          detail="已加入并可访问当前空间的成员数量"
+        />
+        <SpaceManageMetricCard
+          icon={UserPlus}
+          label="待审批"
+          value={joinRequests.length}
+          detail={isOwner ? '由空间创建者审批加入申请' : '仅空间创建者可审批'}
+        />
+        <SpaceManageMetricCard
+          icon={ShieldCheck}
+          label="成员上限"
+          value={currentMemberLimit}
+          detail={`当前上限不能低于已加入成员数 ${approvedMembers.length}`}
+        />
+      </section>
+
+      {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div>
+              <div className="text-lg font-semibold text-slate-900">邀请成员</div>
+              <div className="mt-1 text-sm text-slate-500">
+                可以通过邀请码邀请，也可以通过邮箱或昵称搜索账号后直接发出邀请。
+              </div>
+            </div>
+            <SpaceManageStatusTag label={`待处理邀请 ${emailInvitations.length} 条`} />
+          </div>
+
+          {inviteFeedback ? (
+            <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+              {inviteFeedback}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+            <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                <Link2 className="h-4 w-4" />
+                邀请码
+              </div>
+              <div className="mt-4 rounded-2xl bg-white px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.24em] text-slate-400">CODE</div>
+                <div className="mt-2 break-all font-mono text-2xl font-semibold text-slate-900">
+                  {codeInvitation?.code || '未生成'}
+                </div>
+                <div className="mt-2 text-xs text-slate-500">
+                  {codeInvitation
+                    ? `生成时间：${formatManageDateTime(codeInvitation.created_at)}`
+                    : '生成后可复制给成员直接加入当前空间'}
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerateInviteCode()}
+                  disabled={isGeneratingInviteCode}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGeneratingInviteCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  {codeInvitation ? '重新生成' : '生成邀请码'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleCopyInviteCode()}
+                  disabled={!codeInvitation?.code}
+                  className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Link2 className="h-4 w-4" />
+                  复制
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <UserPlus className="h-4 w-4" />
+                  搜索并邀请成员
+                </div>
+                <label className="relative mt-4 block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={inviteQuery}
+                    onChange={(event) => {
+                      setInviteQuery(event.target.value);
+                      setInviteFeedback('');
+                    }}
+                    placeholder="输入邮箱或昵称搜索用户"
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+                  />
+                </label>
+
+                <div className="mt-4 space-y-3">
+                  {isSearchingInviteCandidates ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">正在搜索可邀请成员...</div>
+                  ) : inviteQuery.trim() && inviteCandidates.length === 0 ? (
+                    <div className="rounded-2xl bg-white px-4 py-5 text-sm text-slate-500">
+                      没有找到可邀请的用户，或该用户已在当前空间中。
+                    </div>
+                  ) : (
+                    inviteCandidates.map((candidate) => {
+                      const isBusy = busyInviteCandidateId === candidate.id;
+                      return (
+                        <div
+                          key={candidate.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">
+                              {candidate.nickname || candidate.email}
+                            </div>
+                            <div className="mt-1 truncate text-sm text-slate-500">{candidate.email}</div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleInviteCandidate(candidate)}
+                            disabled={busyInviteCandidateId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2.5 text-sm text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
+                            发送邀请
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-[24px] border border-slate-200 bg-slate-50 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+                  <Users className="h-4 w-4" />
+                  待处理邀请
+                </div>
+                {emailInvitations.length === 0 ? (
+                  <div className="mt-4 rounded-2xl bg-white px-4 py-6 text-sm text-slate-500">
+                    当前没有待处理的定向邀请。
+                  </div>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {emailInvitations.map((invitation) => {
+                      const isBusy = busyInvitationId === invitation.id;
+                      const displayName =
+                        invitation.invited_user?.nickname ||
+                        invitation.invited_user?.email ||
+                        invitation.invited_email ||
+                        invitation.invited_user_id ||
+                        '未识别用户';
+
+                      return (
+                        <div
+                          key={invitation.id}
+                          className="flex flex-col gap-3 rounded-2xl bg-white px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-medium text-slate-900">{displayName}</div>
+                            <div className="mt-1 truncate text-sm text-slate-500">
+                              {invitation.invited_user?.email || invitation.invited_email || invitation.invited_user_id}
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                              邀请时间：{formatManageDateTime(invitation.created_at)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleRevokeInvitation(invitation.id)}
+                            disabled={busyInvitationId !== null}
+                            className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <X className="h-4 w-4" />}
+                            撤销邀请
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">成员列表</div>
+            <div className="mt-1 text-sm text-slate-500">查看当前空间成员，并按昵称或邮箱搜索。</div>
+          </div>
+
+          <label className="relative block w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={memberQuery}
+              onChange={(event) => setMemberQuery(event.target.value)}
+              placeholder="搜索成员昵称或邮箱"
+              className="w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+            />
+          </label>
+        </div>
+
+        {filteredMembers.length === 0 ? (
+          <div className="mt-4 rounded-[24px] bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">
+            没有匹配到成员。
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredMembers.map((member) => {
+              const isSpaceOwner = member.user_id === team?.owner_user_id;
+              return (
+                <div
+                  key={member.id}
+                  className="flex flex-col gap-3 rounded-[24px] border border-slate-200 px-4 py-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-base font-medium text-slate-900">
+                      {member.user?.nickname || member.user?.email || member.user_id}
+                    </div>
+                    <div className="mt-1 truncate text-sm text-slate-500">{member.user?.email || member.user_id}</div>
+                    <div className="mt-2 text-xs text-slate-400">加入时间：{formatManageDateTime(member.created_at)}</div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <SpaceManageStatusTag label={isSpaceOwner ? '空间所有者' : '空间成员'} />
+                    <SpaceManageStatusTag label="已加入" />
+                    {isOwner && !isSpaceOwner ? (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(member)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600 transition hover:bg-rose-100"
+                      >
+                        <UserMinus className="h-4 w-4" />
+                        移出
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {rejectedMembers.length > 0 ? (
+          <div className="mt-5 text-sm text-slate-500">已处理的拒绝申请：{rejectedMembers.length} 条</div>
+        ) : null}
+      </section>
+    </div>
+  );
 
   const rawSection = searchParams.get('section');
   const requestedSection: ManageSection =
@@ -1314,6 +2919,60 @@ export default function SpaceManagementWorkspacePage() {
     }
   };
 
+  const handleSendAnnouncement = async () => {
+    if (!team) {
+      return;
+    }
+
+    const nextTitle = announcementTitle.trim();
+    const nextContent = announcementContent.trim();
+    if (!nextContent) {
+      setMemberFeedback('请输入通知内容。');
+      notify.info('请输入通知内容');
+      return;
+    }
+
+    setIsSendingAnnouncement(true);
+    setMemberFeedback('');
+
+    try {
+      await teamService.sendNotification(team.id, {
+        title: nextTitle || '空间通知',
+        content: nextContent,
+      });
+      setAnnouncementTitle('');
+      setAnnouncementContent('');
+      setMemberFeedback('空间通知已发送。');
+      notify.success('空间通知已发送');
+    } catch (sendError) {
+      const message = sendError instanceof Error ? sendError.message : '发送空间通知失败';
+      setMemberFeedback(message);
+      notify.error('发送空间通知失败', message);
+    } finally {
+      setIsSendingAnnouncement(false);
+    }
+  };
+
+  const handleRemoveMember = (member: TeamMember) => {
+    if (!team || !member.user_id || member.user_id === team.owner_user_id) {
+      return;
+    }
+
+    const displayName = member.user?.nickname || member.user?.email || member.user_id;
+    setConfirmDialog({
+      title: '移出成员',
+      message: `确定要将「${displayName}」移出当前空间吗？\n移出后，该成员将无法继续访问当前空间内容。`,
+      tone: 'danger',
+      confirmText: '确认移出',
+      onConfirm: async () => {
+        await teamService.removeMember(team.id, member.user_id);
+        await load();
+        setMemberFeedback(`已移出成员：${displayName}`);
+        notify.success('成员已移出', displayName);
+      },
+    });
+  };
+
   const handleAvatarUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -1625,6 +3284,58 @@ export default function SpaceManagementWorkspacePage() {
       </section>
 
       {renderJoinRequests()}
+
+      {isOwner ? (
+        <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start gap-3">
+            <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-600">
+              <Megaphone className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-lg font-semibold text-slate-900">发送空间通知</div>
+              <div className="mt-1 text-sm text-slate-500">
+                创建者可以向当前空间成员发送一条自定义通知，成员会在消息面板中收到提醒。
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知标题</span>
+              <input
+                type="text"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+                placeholder="例如：本周资料整理安排"
+                className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-medium text-slate-700">通知内容</span>
+              <textarea
+                value={announcementContent}
+                onChange={(event) => setAnnouncementContent(event.target.value)}
+                placeholder="输入要发送给空间成员的通知内容"
+                rows={4}
+                className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-emerald-500"
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => void handleSendAnnouncement()}
+                disabled={isSendingAnnouncement}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-4 py-2.5 text-sm text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
+                {isSendingAnnouncement ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
+                发送通知
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {isOwner ? (
         <section className="app-card-hover app-section-enter rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -2030,7 +3741,7 @@ export default function SpaceManagementWorkspacePage() {
 
   const renderSection = () => {
     if (activeSection === 'members') {
-      return renderMembers();
+      return renderManagedMembers();
     }
 
     if (activeSection === 'settings') {
@@ -2128,6 +3839,36 @@ export default function SpaceManagementWorkspacePage() {
             renderSection()
           )}
         </main>
+
+        <ActionDialog
+          isOpen={!!confirmDialog}
+          title={confirmDialog?.title || ''}
+          message={confirmDialog?.message || ''}
+          tone={confirmDialog?.tone || 'default'}
+          confirmText={confirmDialog?.confirmText || '确认'}
+          isConfirming={isConfirmingDialog}
+          onClose={() => {
+            if (isConfirmingDialog) {
+              return;
+            }
+            setConfirmDialog(null);
+          }}
+          onConfirm={async () => {
+            if (!confirmDialog) {
+              return;
+            }
+
+            setIsConfirmingDialog(true);
+            try {
+              await confirmDialog.onConfirm();
+              setConfirmDialog(null);
+            } catch (dialogError) {
+              notify.error('操作失败', dialogError instanceof Error ? dialogError.message : '请稍后重试。');
+            } finally {
+              setIsConfirmingDialog(false);
+            }
+          }}
+        />
       </div>
     </div>
   );

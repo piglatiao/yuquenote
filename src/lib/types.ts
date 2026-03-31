@@ -15,6 +15,9 @@ export interface Team {
   owner_user_id: string;
   avatar_url?: string | null;
   member_limit?: number;
+  status?: 'active' | 'dissolved';
+  dissolved_at?: string | null;
+  retention_until?: string | null;
   created_at: string;
   updated_at: string;
   membership_status?: 'pending' | 'approved' | 'rejected' | null;
@@ -25,7 +28,7 @@ export interface TeamMember {
   id: string;
   team_id: string;
   user_id: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'left' | 'removed';
   created_at: string;
   updated_at: string;
   user?: User;
@@ -125,6 +128,12 @@ export interface SharedResourcePayload {
   team?: Team | null;
 }
 
+export interface ShareSaveResult {
+  ok: boolean;
+  document?: Document | null;
+  file?: FileRecord | null;
+}
+
 export interface PublicDocumentSummary extends Document {
   share_token: string;
   share_link_id?: string;
@@ -145,6 +154,30 @@ export interface PublicFileSummary extends FileRecord {
   shared_team_name?: string | null;
   share_visibility?: ShareLink['visibility'];
   has_password?: boolean;
+}
+
+export interface UserNotification {
+  id: string;
+  user_id: string;
+  team_id: string | null;
+  actor_user_id: string | null;
+  type: 'team_announcement' | 'team_member_left' | 'team_member_removed' | 'team_dissolved';
+  title: string;
+  content: string;
+  action_url: string | null;
+  is_read: boolean;
+  created_at: string;
+  updated_at: string;
+  actor_user?: User;
+  team?: Team;
+}
+
+export interface TeamRecyclePayload {
+  team: Team;
+  retention_until: string | null;
+  documents: Document[];
+  folders: Folder[];
+  files: FileRecord[];
 }
 
 export interface Comment {

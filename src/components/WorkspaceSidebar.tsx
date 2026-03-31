@@ -24,13 +24,14 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import ActionDialog from './ActionDialog';
 import NameInputModal from './NameInputModal';
 import ProfileSettingsUploadModal from './ProfileSettingsUploadModal';
 import { authService } from '../lib/authApi';
-import { publicResourceService, teamService } from '../lib/databaseApi';
+import { notificationService, publicResourceService, teamService } from '../lib/databaseApi';
 import type { DocTreeItem } from '../lib/documentsApi';
 import { notify } from '../lib/notify';
-import type { PublicDocumentSummary, PublicFileSummary, Team, TeamInvitation, User } from '../lib/types';
+import type { PublicDocumentSummary, PublicFileSummary, Team, TeamInvitation, User, UserNotification } from '../lib/types';
 
 interface WorkspaceSidebarProps {
   onDocSelect: (doc: DocTreeItem) => void;
@@ -126,6 +127,7 @@ export default function WorkspaceSidebar({
   const [pendingInvitations, setPendingInvitations] = useState<TeamInvitation[]>([]);
   const [publicDocuments, setPublicDocuments] = useState<PublicDocumentSummary[]>([]);
   const [publicFiles, setPublicFiles] = useState<PublicFileSummary[]>([]);
+  const [notifications, setNotifications] = useState<UserNotification[]>([]);
   const [showCreateSpaceDialog, setShowCreateSpaceDialog] = useState(false);
   const [draftSpaceName, setDraftSpaceName] = useState('');
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -136,7 +138,17 @@ export default function WorkspaceSidebar({
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
   const [busyInvitationId, setBusyInvitationId] = useState<string | null>(null);
+  const [busyWorkspaceActionId, setBusyWorkspaceActionId] = useState<string | null>(null);
   const [copiedNotificationKey, setCopiedNotificationKey] = useState('');
+  const [workspaceActionDialog, setWorkspaceActionDialog] = useState<{
+    title: string;
+    message: string;
+    tone?: 'default' | 'danger';
+    confirmText?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [notificationDetailDialog, setNotificationDetailDialog] = useState<UserNotification | null>(null);
+  const [isConfirmingWorkspaceAction, setIsConfirmingWorkspaceAction] = useState(false);
   const [menuError, setMenuError] = useState('');
   const [joinSpaceError, setJoinSpaceError] = useState('');
   const [notificationError, setNotificationError] = useState('');
@@ -217,8 +229,8 @@ export default function WorkspaceSidebar({
   }, [activeWorkspaceTeam, pendingInvitations.length, publicShareItems.length]);
 
   const notificationBadgeCount = useMemo(
-    () => pendingInvitations.length + publicShareItems.length,
-    [pendingInvitations.length, publicShareItems.length],
+    () => pendingInvitations.length + publicShareItems.length + notifications.filter((item) => !item.is_read).length,
+    [notifications, pendingInvitations.length, publicShareItems.length],
   );
 
   const allDocs = useMemo(() => {
@@ -340,17 +352,20 @@ export default function WorkspaceSidebar({
       setPendingInvitations([]);
       setPublicDocuments([]);
       setPublicFiles([]);
+      setNotifications([]);
       return;
     }
 
     setIsLoadingNotifications(true);
+    setNotifications([]);
 
     try {
       setNotificationError('');
-      const [invitationResult, documentResult, fileResult] = await Promise.allSettled([
+      const [invitationResult, documentResult, fileResult, notificationResult] = await Promise.allSettled([
         teamService.getMyInvitations(),
         publicResourceService.getDocuments(activeWorkspaceTeam?.id ?? null),
         publicResourceService.getFiles(activeWorkspaceTeam?.id ?? null),
+        notificationService.getMine(),
       ]);
 
       const errors: string[] = [];
@@ -376,6 +391,13 @@ export default function WorkspaceSidebar({
         errors.push(fileResult.reason instanceof Error ? fileResult.reason.message : '空间分享文件加载失败');
       }
 
+      if (notificationResult.status === 'fulfilled') {
+        setNotifications(notificationResult.value);
+      } else {
+        setNotifications([]);
+        errors.push(notificationResult.reason instanceof Error ? notificationResult.reason.message : '消息列表加载失败');
+      }
+
       if (errors.length > 0) {
         setNotificationError(errors[0]);
       }
@@ -394,11 +416,37 @@ export default function WorkspaceSidebar({
       setPendingInvitations([]);
       setPublicDocuments([]);
       setPublicFiles([]);
+      setNotifications([]);
       return;
     }
 
     void loadNotificationFeed();
   }, [user?.id, activeWorkspaceTeam?.id]);
+
+  useEffect(() => {
+    if (!notificationMenuOpen) {
+      return;
+    }
+
+    const unreadNotifications = notifications.filter((item) => !item.is_read);
+    if (unreadNotifications.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    const markRead = async () => {
+      await Promise.all(unreadNotifications.map((item) => notificationService.markRead(item.id).catch(() => null)));
+      if (!cancelled) {
+        setNotifications((current) => current.map((item) => ({ ...item, is_read: true })));
+      }
+    };
+
+    void markRead();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [notificationMenuOpen, notifications]);
 
   useEffect(() => {
     setWorkspaceMenuOpen(false);
@@ -687,6 +735,66 @@ export default function WorkspaceSidebar({
     navigate(`/spaces/${encodeURIComponent(teamId)}/manage?section=${encodeURIComponent(section)}`);
   };
 
+  const handleWorkspaceAction = (team: Team) => {
+    const isOwnerSpace = !!team.is_owner;
+    setWorkspaceActionDialog({
+      title: isOwnerSpace ? '解散空间' : '退出空间',
+      message: isOwnerSpace
+        ? `确定要解散「${team.name}」吗？\n解散后，空间成员会收到通知，原空间内容会进入 7 天回收保留期。`
+        : `确定要退出「${team.name}」吗？\n退出后，你将无法继续访问这个空间的内容。`,
+      tone: 'danger',
+      confirmText: isOwnerSpace ? '确认解散' : '确认退出',
+      onConfirm: async () => {
+        setBusyWorkspaceActionId(team.id);
+        try {
+          if (isOwnerSpace) {
+            await teamService.dissolveTeam(team.id);
+            notify.success('空间已解散', `${team.name} 的内容将保留 7 天。`);
+          } else {
+            await teamService.leaveTeam(team.id);
+            notify.success('已退出空间', team.name);
+          }
+
+          setTeams((current) => current.filter((item) => item.id !== team.id));
+          if (activeWorkspaceTeam?.id === team.id) {
+            onLeaveTeamSpace();
+            onTabChange('docs');
+          }
+          setWorkspaceMenuOpen(false);
+        } catch (actionError) {
+          notify.error(
+            isOwnerSpace ? '解散空间失败' : '退出空间失败',
+            actionError instanceof Error ? actionError.message : '请稍后重试。',
+          );
+          throw actionError;
+        } finally {
+          setBusyWorkspaceActionId(null);
+        }
+      },
+    });
+  };
+
+  const openNotificationAction = (notification: UserNotification) => {
+    setNotificationMenuOpen(false);
+    setNotificationDetailDialog(notification);
+  };
+
+  const buildNotificationDetailMessage = (notification: UserNotification) => {
+    const lines = [notification.content];
+
+    if (notification.team?.name) {
+      lines.push(`相关空间：${notification.team.name}`);
+    }
+
+    if (notification.actor_user) {
+      lines.push(`发起人：${notification.actor_user.nickname || notification.actor_user.email}`);
+    }
+
+    lines.push(`通知时间：${new Date(notification.created_at).toLocaleString('zh-CN')}`);
+
+    return lines.join('\n');
+  };
+
   return (
     <>
       <aside className="app-page-enter relative flex h-full min-h-0 w-[244px] min-w-[244px] shrink-0 flex-col overflow-visible border-r border-slate-200 bg-[#f7f5f1] lg:w-[256px] lg:min-w-[256px]">
@@ -843,6 +951,29 @@ export default function WorkspaceSidebar({
                           </div>
                         </div>
                         {activeWorkspaceTeam?.id === team.id && <Check className="h-4 w-4 text-slate-900" />}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleWorkspaceAction(team);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void handleWorkspaceAction(team);
+                            }
+                          }}
+                          className={`ml-1 inline-flex shrink-0 items-center rounded-xl px-2.5 py-1 text-xs font-medium ${
+                            team.is_owner
+                              ? 'bg-rose-50 text-rose-600'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {busyWorkspaceActionId === team.id ? '处理中...' : team.is_owner ? '解散' : '退出'}
+                        </span>
                       </button>
                     ))}
 
@@ -1016,10 +1147,69 @@ export default function WorkspaceSidebar({
                           );
                         })
                       )}
-                    </div>
-                  </div>
+	                    </div>
+	                  </div>
 
-                  <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
+	                  <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
+	                    <div className="flex items-center justify-between gap-3">
+	                      <div>
+	                        <div className="text-sm font-semibold text-slate-900">空间消息</div>
+	                        <div className="mt-1 text-xs text-slate-500">
+	                          {notifications.length > 0 ? `共有 ${notifications.length} 条通知` : '暂时没有新的空间消息'}
+	                        </div>
+	                      </div>
+	                    </div>
+
+	                    <div className="mt-3 space-y-2">
+	                      {notifications.length === 0 ? (
+	                        <div className="rounded-2xl bg-slate-50 px-4 py-5 text-center text-sm text-slate-500">
+	                          当前没有新的通知
+	                        </div>
+	                      ) : (
+	                        notifications.map((item) => (
+	                          <div key={item.id} className="rounded-2xl bg-slate-50 px-4 py-4">
+	                            <div className="flex items-start justify-between gap-3">
+	                              <div className="min-w-0">
+	                                <div className="flex items-center gap-2">
+	                                  <div className="truncate text-sm font-semibold text-slate-900">{item.title}</div>
+	                                  {!item.is_read ? <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-500" /> : null}
+	                                </div>
+	                                <div className="mt-1 text-xs leading-5 text-slate-500">{item.content}</div>
+	                                <div className="mt-2 text-[11px] text-slate-400">
+	                                  {new Date(item.created_at).toLocaleString('zh-CN')}
+	                                </div>
+	                              </div>
+	                              {item.actor_user?.avatar_url ? (
+	                                <img
+	                                  src={item.actor_user.avatar_url}
+	                                  alt={item.actor_user.nickname}
+	                                  className="h-8 w-8 shrink-0 rounded-full object-cover"
+	                                />
+	                              ) : item.actor_user ? (
+	                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-200 text-[11px] font-semibold text-slate-700">
+	                                  {getInitials(item.actor_user.nickname || item.actor_user.email || '?')}
+	                                </div>
+	                              ) : null}
+	                            </div>
+
+		                            {true ? (
+	                              <div className="mt-3">
+	                                <button
+	                                  type="button"
+	                                  onClick={() => openNotificationAction(item)}
+	                                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 transition hover:bg-slate-100"
+	                                >
+	                                  打开
+	                                </button>
+	                              </div>
+	                            ) : null}
+	                          </div>
+	                        ))
+	                      )}
+	                    </div>
+	                  </div>
+
+	                  <div className="mt-3 rounded-2xl border border-slate-200 px-4 py-4">
                     <div className="text-sm font-semibold text-slate-900">系统通知</div>
                     <div className="mt-3 space-y-2">
                       {systemNotifications.map((item) => (
@@ -1347,6 +1537,44 @@ export default function WorkspaceSidebar({
           setDraftJoinSpaceCode('');
           setJoinSpaceError('');
         }}
+      />
+
+      <ActionDialog
+        isOpen={!!workspaceActionDialog}
+        title={workspaceActionDialog?.title || ''}
+        message={workspaceActionDialog?.message || ''}
+        tone={workspaceActionDialog?.tone || 'default'}
+        confirmText={workspaceActionDialog?.confirmText || '确认'}
+        isConfirming={isConfirmingWorkspaceAction}
+        onClose={() => {
+          if (isConfirmingWorkspaceAction) {
+            return;
+          }
+          setWorkspaceActionDialog(null);
+        }}
+        onConfirm={async () => {
+          if (!workspaceActionDialog) {
+            return;
+          }
+
+          setIsConfirmingWorkspaceAction(true);
+          try {
+            await workspaceActionDialog.onConfirm();
+            setWorkspaceActionDialog(null);
+          } finally {
+            setIsConfirmingWorkspaceAction(false);
+          }
+        }}
+      />
+
+      <ActionDialog
+        isOpen={!!notificationDetailDialog}
+        title={notificationDetailDialog?.title || ''}
+        message={notificationDetailDialog ? buildNotificationDetailMessage(notificationDetailDialog) : ''}
+        confirmText="我知道了"
+        showCancel={false}
+        onClose={() => setNotificationDetailDialog(null)}
+        onConfirm={() => setNotificationDetailDialog(null)}
       />
 
       <ProfileSettingsUploadModal

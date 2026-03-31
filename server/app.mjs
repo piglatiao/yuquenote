@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   DATA_DIR,
@@ -33,6 +33,7 @@ import {
   listDocuments,
   listFiles,
   listFolders,
+  listNotificationsForUser,
   listPendingInvitationsForUser,
   listPublicDocuments,
   listPublicFiles,
@@ -49,6 +50,7 @@ import {
   now,
   publicUser,
   getPendingTeamInvitationByCode,
+  getNotificationById,
   searchInvitableUsers,
   sanitizeNullable,
   shareLinkRowToModel,
@@ -61,6 +63,15 @@ const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
 const SERVER_HOST = process.env.HOST || process.env.YUQUE_HOST || '0.0.0.0';
 const DIST_DIR = path.resolve(process.env.YUQUE_STATIC_DIR || path.join(ROOT_DIR, 'dist'));
 const RESOURCE_TYPES = new Set(['document', 'file']);
+const DISSOLVED_TEAM_RETENTION_DAYS = 7;
+const DEFAULT_TRANSFER_DOCUMENT_FOLDER_NAME = '转存笔记文件夹';
+const DEFAULT_TRANSFER_FILE_FOLDER_NAME = '转存文件文件夹';
+
+function addDays(isoString, days) {
+  const date = new Date(isoString);
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+}
 
 function getCurrentUserId(req) {
   const raw = req.headers['x-user-id'];
@@ -84,13 +95,23 @@ function requireAuth(req, res) {
 
 function isApprovedTeamMember(userId, teamId) {
   if (!userId || !teamId) return false;
+  const team = getTeamById(teamId, { includeDissolved: true });
+  if (!team || team.status !== 'active') {
+    return false;
+  }
   const membership = getTeamMembership(teamId, userId);
   return membership?.status === 'approved';
 }
 
 function isTeamOwner(userId, teamId) {
   if (!userId || !teamId) return false;
-  const team = getTeamById(teamId);
+  const team = getTeamById(teamId, { includeDissolved: true });
+  return Boolean(team && team.status === 'active' && team.owner_user_id === userId);
+}
+
+function isTeamOwnerIncludingDissolved(userId, teamId) {
+  if (!userId || !teamId) return false;
+  const team = getTeamById(teamId, { includeDissolved: true });
   return Boolean(team && team.owner_user_id === userId);
 }
 
@@ -120,6 +141,72 @@ function hasAvailableTeamSeat(teamId) {
 
 function generateInviteCode() {
   return randomBytes(4).toString('hex').toUpperCase();
+}
+
+function createUserNotification({
+  userId,
+  teamId = null,
+  actorUserId = null,
+  type,
+  title,
+  content,
+  actionUrl = null,
+}) {
+  const timestamp = now();
+  const id = newId();
+
+  db.prepare(`
+    INSERT INTO user_notifications (
+      id, user_id, team_id, actor_user_id, type, title, content, action_url, is_read, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+  `).run(id, userId, teamId, actorUserId, type, title, content, actionUrl, timestamp, timestamp);
+
+  return getNotificationById(id);
+}
+
+function broadcastTeamNotification(teamId, payload, excludeUserIds = []) {
+  const seen = new Set(excludeUserIds);
+  const members = listTeamMembers(teamId);
+
+  members.forEach((member) => {
+    if (seen.has(member.user_id)) {
+      return;
+    }
+
+    seen.add(member.user_id);
+    createUserNotification({
+      ...payload,
+      userId: member.user_id,
+      teamId,
+    });
+  });
+}
+
+function isExpiredRetention(value) {
+  if (!value) {
+    return false;
+  }
+
+  return new Date(value).getTime() < Date.now();
+}
+
+function canAccessDissolvedTeamRecycle(userId, teamId) {
+  if (!userId || !teamId) {
+    return false;
+  }
+
+  const team = getTeamById(teamId, { includeDissolved: true });
+  if (!team || team.status !== 'dissolved' || isExpiredRetention(team.retention_until)) {
+    return false;
+  }
+
+  if (team.owner_user_id === userId) {
+    return true;
+  }
+
+  const membership = getTeamMembership(teamId, userId);
+  return membership?.status === 'approved';
 }
 
 function approveMembership(teamId, userId) {
@@ -281,6 +368,189 @@ function ensureTeamOwner(res, userId, teamId) {
   return true;
 }
 
+function ensurePersonalDocumentFolder(userId, preferredParentId = null) {
+  const existing = db.prepare(`
+    SELECT *
+    FROM documents
+    WHERE user_id = ?
+      AND team_id IS NULL
+      AND parent_id IS ?
+      AND icon = 'folder'
+      AND is_deleted = 0
+      AND title = ?
+    ORDER BY created_at ASC
+    LIMIT 1
+  `).get(userId, preferredParentId, DEFAULT_TRANSFER_DOCUMENT_FOLDER_NAME);
+
+  if (existing) {
+    return documentRowToModel(existing);
+  }
+
+  const timestamp = now();
+  const id = newId();
+  const orderIndex = getNextOrderIndex('documents', 'parent_id', preferredParentId);
+
+  db.prepare(`
+    INSERT INTO documents (id, title, content, parent_id, icon, created_at, updated_at, user_id, team_id, is_starred, order_index, is_deleted)
+    VALUES (?, ?, ?, ?, 'folder', ?, ?, ?, NULL, 0, ?, 0)
+  `).run(id, DEFAULT_TRANSFER_DOCUMENT_FOLDER_NAME, '<p></p>', preferredParentId, timestamp, timestamp, userId, orderIndex);
+
+  return getDocumentById(id);
+}
+
+function ensurePersonalFileFolder(userId, preferredParentId = null) {
+  const existing = db.prepare(`
+    SELECT *
+    FROM folders
+    WHERE user_id = ?
+      AND team_id IS NULL
+      AND parent_id IS ?
+      AND name = ?
+    ORDER BY created_at ASC
+    LIMIT 1
+  `).get(userId, preferredParentId, DEFAULT_TRANSFER_FILE_FOLDER_NAME);
+
+  if (existing) {
+    return existing;
+  }
+
+  const timestamp = now();
+  const id = newId();
+  const orderIndex = getNextOrderIndex('folders', 'parent_id', preferredParentId);
+
+  db.prepare(`
+    INSERT INTO folders (id, name, parent_id, icon, created_at, updated_at, user_id, team_id, order_index)
+    VALUES (?, ?, ?, 'folder', ?, ?, ?, NULL, ?)
+  `).run(id, DEFAULT_TRANSFER_FILE_FOLDER_NAME, preferredParentId, timestamp, timestamp, userId, orderIndex);
+
+  return getFolderById(id);
+}
+
+function resolvePersonalDocumentTarget(userId, requestedParentId) {
+  const parentId = sanitizeNullable(requestedParentId);
+  if (!parentId) {
+    return ensurePersonalDocumentFolder(userId)?.id ?? null;
+  }
+
+  const parent = getDocumentById(parentId);
+  if (!parent) {
+    throw new Error('Target note folder not found.');
+  }
+  if (parent.icon !== 'folder') {
+    throw new Error('Target note location must be a folder.');
+  }
+  if (parent.user_id !== userId || sanitizeNullable(parent.team_id)) {
+    throw new Error('You do not have permission to use this note folder.');
+  }
+  if (parent.is_deleted) {
+    throw new Error('Target note folder has been deleted.');
+  }
+
+  return parent.id;
+}
+
+function resolvePersonalFileTarget(userId, requestedFolderId) {
+  const folderId = sanitizeNullable(requestedFolderId);
+  if (!folderId) {
+    return ensurePersonalFileFolder(userId)?.id ?? null;
+  }
+
+  const folder = getFolderById(folderId);
+  if (!folder) {
+    throw new Error('Target file folder not found.');
+  }
+  if (folder.user_id !== userId || sanitizeNullable(folder.team_id)) {
+    throw new Error('You do not have permission to use this file folder.');
+  }
+
+  return folder.id;
+}
+
+function copyDocumentSubtreeToUser(sourceDocumentId, userId, targetParentId, rootOrderIndex = null) {
+  const sourceDocument = getDocumentById(sourceDocumentId);
+  if (!sourceDocument || sourceDocument.is_deleted) {
+    throw new Error('Source document not found.');
+  }
+
+  const timestamp = now();
+  const id = newId();
+  const orderIndex = rootOrderIndex ?? getNextOrderIndex('documents', 'parent_id', targetParentId);
+
+  db.prepare(`
+    INSERT INTO documents (id, title, content, parent_id, icon, created_at, updated_at, user_id, team_id, is_starred, order_index, is_deleted)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, 0)
+  `).run(
+    id,
+    sourceDocument.title,
+    sourceDocument.content,
+    targetParentId,
+    sourceDocument.icon ?? 'file',
+    timestamp,
+    timestamp,
+    userId,
+    orderIndex,
+  );
+
+  const children = db
+    .prepare('SELECT * FROM documents WHERE parent_id = ? AND is_deleted = 0 ORDER BY order_index ASC, created_at ASC')
+    .all(sourceDocumentId)
+    .map(documentRowToModel);
+
+  children.forEach((child, index) => {
+    copyDocumentSubtreeToUser(child.id, userId, id, child.order_index ?? index);
+  });
+
+  return getDocumentById(id);
+}
+
+async function copyFileToUser(file, userId, targetFolderId) {
+  if (!file) {
+    throw new Error('Source file not found.');
+  }
+
+  const sourcePath = path.join(FILES_DIR, ...String(file.storage_path).split('/'));
+  if (!existsSync(sourcePath)) {
+    throw new Error('Source file is missing.');
+  }
+
+  const storedFileName = `${Date.now()}-${newId()}${path.extname(file.name) || path.extname(file.storage_path)}`;
+  const dateFolder = new Date().toISOString().slice(0, 10);
+  const relativePath = path.posix.join('personal', dateFolder, file.type || getFileType(file.name || '', ''), storedFileName);
+  const targetPath = path.join(FILES_DIR, ...relativePath.split('/'));
+
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await copyFile(sourcePath, targetPath);
+
+  const timestamp = now();
+  const id = newId();
+  const url = `/uploads/${relativePath}`;
+  const thumbnailUrl =
+    file.type === 'image'
+      ? url
+      : file.thumbnail_url && file.thumbnail_url === file.url
+        ? url
+        : file.thumbnail_url;
+
+  db.prepare(`
+    INSERT INTO files (id, name, type, size, url, thumbnail_url, storage_path, folder_id, created_at, updated_at, user_id, team_id, is_starred)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+  `).run(
+    id,
+    file.name,
+    file.type,
+    Number(file.size || 0),
+    url,
+    thumbnailUrl,
+    relativePath,
+    targetFolderId,
+    timestamp,
+    timestamp,
+    userId,
+  );
+
+  return getFileById(id);
+}
+
 function canShareResourceToSpace(userId, resource, targetTeamId) {
   if (!userId || !resource || !targetTeamId) {
     return false;
@@ -349,6 +619,14 @@ function canAccessShareLink(userId, link, payload, providedPassword = null) {
 
     if (!verifyPassword(password, link.password_hash)) {
       return { allowed: false, status: 403, message: 'The share password is incorrect.' };
+    }
+  }
+
+  const sourceTeamId = sanitizeNullable(payload.resource.team_id);
+  if (sourceTeamId) {
+    const sourceTeam = getTeamById(sourceTeamId, { includeDissolved: true });
+    if (!sourceTeam || sourceTeam.status !== 'active') {
+      return { allowed: false, status: 410, message: 'The original workspace is no longer available.' };
     }
   }
 
@@ -734,6 +1012,298 @@ async function handleApi(req, res, url) {
     }
 
     json(res, 200, serializeTeamForUser(team, currentUser.id));
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/leave$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/leave', '').replace('/api/teams/', ''));
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (team.owner_user_id === currentUser.id) {
+      json(res, 400, { error: 'The team owner cannot leave the workspace. Dissolve it instead.' });
+      return;
+    }
+
+    const membership = getTeamMembership(teamId, currentUser.id);
+    if (!membership || membership.status !== 'approved') {
+      json(res, 404, { error: 'You are not a member of this team.' });
+      return;
+    }
+
+    const timestamp = now();
+    db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('left', timestamp, membership.id);
+    db.prepare('DELETE FROM resource_permissions WHERE team_id = ? AND member_user_id = ?').run(teamId, currentUser.id);
+
+    createUserNotification({
+      userId: team.owner_user_id,
+      teamId,
+      actorUserId: currentUser.id,
+      type: 'team_member_left',
+      title: '成员退出了空间',
+      content: `${currentUser.nickname || currentUser.email} 已退出「${team.name}」。`,
+      actionUrl: `/spaces/${encodeURIComponent(teamId)}/manage?section=members`,
+    });
+
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/dissolve$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/dissolve', '').replace('/api/teams/', ''));
+    const team = getTeamById(teamId, { includeDissolved: true });
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (!isTeamOwnerIncludingDissolved(currentUser.id, teamId)) {
+      json(res, 403, { error: 'Only the team owner can dissolve this team.' });
+      return;
+    }
+
+    if (team.status === 'dissolved') {
+      json(res, 200, { ok: true, retention_until: team.retention_until ?? null });
+      return;
+    }
+
+    const timestamp = now();
+    const retentionUntil = addDays(timestamp, DISSOLVED_TEAM_RETENTION_DAYS);
+
+    db.prepare(`
+      UPDATE teams
+      SET status = 'dissolved', dissolved_at = ?, retention_until = ?, updated_at = ?
+      WHERE id = ?
+    `).run(timestamp, retentionUntil, timestamp, teamId);
+
+    db.prepare(`
+      UPDATE team_invitations
+      SET status = 'revoked', updated_at = ?
+      WHERE team_id = ? AND status = 'pending'
+    `).run(timestamp, teamId);
+
+    broadcastTeamNotification(
+      teamId,
+      {
+        actorUserId: currentUser.id,
+        type: 'team_dissolved',
+        title: '空间已解散',
+        content: `「${team.name}」已被解散，原空间内容会在回收站保留 ${DISSOLVED_TEAM_RETENTION_DAYS} 天，你可以在期限内转存需要的内容。`,
+        actionUrl: `/spaces/${encodeURIComponent(teamId)}/recycle`,
+      },
+      [currentUser.id],
+    );
+
+    json(res, 200, { ok: true, retention_until: retentionUntil });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/members\/[^/]+\/remove$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const memberUserId = decodeURIComponent(segments[5]);
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    if (memberUserId === team.owner_user_id) {
+      json(res, 400, { error: 'The team owner cannot be removed.' });
+      return;
+    }
+
+    const membership = getTeamMembership(teamId, memberUserId);
+    if (!membership || membership.status !== 'approved') {
+      json(res, 404, { error: 'Team member not found.' });
+      return;
+    }
+
+    const removedUser = getUserById(memberUserId);
+    const timestamp = now();
+    db.prepare('UPDATE team_members SET status = ?, updated_at = ? WHERE id = ?').run('removed', timestamp, membership.id);
+    db.prepare('DELETE FROM resource_permissions WHERE team_id = ? AND member_user_id = ?').run(teamId, memberUserId);
+
+    createUserNotification({
+      userId: memberUserId,
+      teamId,
+      actorUserId: currentUser.id,
+      type: 'team_member_removed',
+      title: '你已被移出空间',
+      content: `你已被移出「${team.name}」，该空间内容将不再可见。`,
+      actionUrl: null,
+    });
+
+    json(res, 200, {
+      ok: true,
+      member: removedUser ? publicUser(removedUser) : null,
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/notifications$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/notifications', '').replace('/api/teams/', ''));
+    if (!ensureTeamOwner(res, currentUser.id, teamId)) return;
+
+    const team = getTeamById(teamId);
+    if (!team) {
+      json(res, 404, { error: 'Team not found.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const title = String(body.title || '').trim() || '空间通知';
+    const content = String(body.content || '').trim();
+
+    if (!content) {
+      json(res, 400, { error: 'Notification content is required.' });
+      return;
+    }
+
+    broadcastTeamNotification(
+      teamId,
+      {
+        actorUserId: currentUser.id,
+        type: 'team_announcement',
+        title,
+        content,
+        actionUrl: `/spaces/${encodeURIComponent(teamId)}/manage?section=overview`,
+      },
+      [currentUser.id],
+    );
+
+    json(res, 201, { ok: true });
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/teams\/[^/]+\/recycle$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const teamId = decodeURIComponent(url.pathname.replace('/recycle', '').replace('/api/teams/', ''));
+    const team = getTeamById(teamId, { includeDissolved: true });
+    if (!team || team.status !== 'dissolved') {
+      json(res, 404, { error: 'Recycle workspace not found.' });
+      return;
+    }
+
+    if (isExpiredRetention(team.retention_until)) {
+      json(res, 410, { error: 'Recycle retention has expired.' });
+      return;
+    }
+
+    if (!canAccessDissolvedTeamRecycle(currentUser.id, teamId)) {
+      json(res, 403, { error: 'You do not have access to this recycle space.' });
+      return;
+    }
+
+    const documents = db
+      .prepare('SELECT * FROM documents WHERE team_id = ? AND is_deleted = 0 ORDER BY parent_id, order_index, created_at')
+      .all(teamId)
+      .map(documentRowToModel);
+    const folders = db.prepare('SELECT * FROM folders WHERE team_id = ? ORDER BY parent_id, order_index, created_at').all(teamId);
+    const files = db.prepare('SELECT * FROM files WHERE team_id = ? ORDER BY created_at DESC').all(teamId).map(fileRowToModel).filter(Boolean);
+
+    json(res, 200, {
+      team,
+      retention_until: team.retention_until,
+      documents,
+      folders,
+      files,
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/recycle\/documents\/[^/]+\/save$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const documentId = decodeURIComponent(segments[6]);
+    const team = getTeamById(teamId, { includeDissolved: true });
+    if (!team || team.status !== 'dissolved') {
+      json(res, 404, { error: 'Recycle workspace not found.' });
+      return;
+    }
+    if (isExpiredRetention(team.retention_until)) {
+      json(res, 410, { error: 'Recycle retention has expired.' });
+      return;
+    }
+    if (!canAccessDissolvedTeamRecycle(currentUser.id, teamId)) {
+      json(res, 403, { error: 'You do not have access to this recycle space.' });
+      return;
+    }
+
+    const sourceDocument = getDocumentById(documentId);
+    if (!sourceDocument || sanitizeNullable(sourceDocument.team_id) !== teamId) {
+      json(res, 404, { error: 'Document not found in recycle space.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    try {
+      const targetParentId = resolvePersonalDocumentTarget(currentUser.id, body.target_document_parent_id);
+      const savedDocument = copyDocumentSubtreeToUser(sourceDocument.id, currentUser.id, targetParentId);
+      json(res, 201, { ok: true, document: savedDocument });
+    } catch (error) {
+      json(res, 400, { error: error instanceof Error ? error.message : 'Failed to save document.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/teams\/[^/]+\/recycle\/files\/[^/]+\/save$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const segments = url.pathname.split('/');
+    const teamId = decodeURIComponent(segments[3]);
+    const fileId = decodeURIComponent(segments[6]);
+    const team = getTeamById(teamId, { includeDissolved: true });
+    if (!team || team.status !== 'dissolved') {
+      json(res, 404, { error: 'Recycle workspace not found.' });
+      return;
+    }
+    if (isExpiredRetention(team.retention_until)) {
+      json(res, 410, { error: 'Recycle retention has expired.' });
+      return;
+    }
+    if (!canAccessDissolvedTeamRecycle(currentUser.id, teamId)) {
+      json(res, 403, { error: 'You do not have access to this recycle space.' });
+      return;
+    }
+
+    const sourceFile = getFileById(fileId);
+    if (!sourceFile || sanitizeNullable(sourceFile.team_id) !== teamId) {
+      json(res, 404, { error: 'File not found in recycle space.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    try {
+      const targetFolderId = resolvePersonalFileTarget(currentUser.id, body.target_file_folder_id);
+      const savedFile = await copyFileToUser(sourceFile, currentUser.id, targetFolderId);
+      json(res, 201, { ok: true, file: savedFile });
+    } catch (error) {
+      json(res, 400, { error: error instanceof Error ? error.message : 'Failed to save file.' });
+    }
     return;
   }
 
@@ -1131,6 +1701,30 @@ async function handleApi(req, res, url) {
     `).run(now(), invitation.id);
 
     json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/notifications/mine') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, listNotificationsForUser(currentUser.id));
+    return;
+  }
+
+  if (req.method === 'PATCH' && /^\/api\/notifications\/[^/]+\/read$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const notificationId = decodeURIComponent(url.pathname.split('/')[3]);
+    const notification = getNotificationById(notificationId);
+    if (!notification || notification.user_id !== currentUser.id) {
+      json(res, 404, { error: 'Notification not found.' });
+      return;
+    }
+
+    db.prepare('UPDATE user_notifications SET is_read = 1, updated_at = ? WHERE id = ?').run(now(), notificationId);
+    json(res, 200, getNotificationById(notificationId));
     return;
   }
 
@@ -2207,6 +2801,47 @@ async function handleApi(req, res, url) {
       file: payload?.type === 'file' ? payload.resource : null,
       team: link.team_id ? getTeamById(link.team_id) : null,
     });
+    return;
+  }
+
+  if (req.method === 'POST' && /^\/api\/share-links\/token\/[^/]+\/save$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const token = decodeURIComponent(url.pathname.replace('/api/share-links/token/', '').replace('/save', ''));
+    const rawLink = getShareLinkRowByToken(token);
+    if (!rawLink) {
+      json(res, 404, { error: 'Share link not found.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const payload = resolveSharePayload(rawLink);
+    const access = canAccessShareLink(currentUser.id, rawLink, payload, sanitizeNullable(body?.password));
+    if (!access.allowed) {
+      json(res, access.status, { error: access.message });
+      return;
+    }
+
+    try {
+      if (payload?.type === 'document' && payload.resource) {
+        const targetParentId = resolvePersonalDocumentTarget(currentUser.id, body.target_document_parent_id);
+        const savedDocument = copyDocumentSubtreeToUser(payload.resource.id, currentUser.id, targetParentId);
+        json(res, 201, { ok: true, document: savedDocument });
+        return;
+      }
+
+      if (payload?.type === 'file' && payload.resource) {
+        const targetFolderId = resolvePersonalFileTarget(currentUser.id, body.target_file_folder_id);
+        const savedFile = await copyFileToUser(payload.resource, currentUser.id, targetFolderId);
+        json(res, 201, { ok: true, file: savedFile });
+        return;
+      }
+
+      json(res, 404, { error: 'Shared resource not found.' });
+    } catch (error) {
+      json(res, 400, { error: error instanceof Error ? error.message : 'Failed to save shared resource.' });
+    }
     return;
   }
 

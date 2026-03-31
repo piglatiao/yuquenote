@@ -7,6 +7,7 @@ import './index.css'
 import App from './App.tsx'
 import PublicLibraryStandalone from './pages/PublicLibraryStandalone.tsx'
 import SharePageAccess from './pages/SharePageAccess.tsx'
+import SpaceRecyclePage from './pages/SpaceRecyclePage.tsx'
 import SpaceManagementWorkspacePage from './pages/SpaceManagementWorkspacePage.tsx'
 
 createRoot(document.getElementById('root')!).render(
@@ -18,6 +19,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/public" element={<PublicLibraryStandalone />} />
           <Route path="/share/:token" element={<SharePageAccess />} />
           <Route path="/spaces/:teamId/manage" element={<SpaceManagementWorkspacePage />} />
+          <Route path="/spaces/:teamId/recycle" element={<SpaceRecyclePage />} />
         </Routes>
         <Toaster
           position="top-center"
