@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Save, Share2, MessageCircle, CheckCircle2, Clock, ChevronDown } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle2, Clock, MessageCircle, Save, Share2 } from 'lucide-react';
 
 interface HeaderProps {
   title: string;
@@ -10,9 +10,11 @@ interface HeaderProps {
   canEditTitle?: boolean;
   showShare?: boolean;
   onShare?: () => void;
-  showComments?: boolean;
+  showCommentAction?: boolean;
+  isCommentsActive?: boolean;
   onToggleComments?: () => void;
-  showTodos?: boolean;
+  showTodoAction?: boolean;
+  isTodosActive?: boolean;
   onToggleTodos?: () => void;
 }
 
@@ -25,9 +27,11 @@ export default function Header({
   canEditTitle = true,
   showShare = false,
   onShare,
-  showComments = false,
+  showCommentAction = false,
+  isCommentsActive = false,
   onToggleComments,
-  showTodos = false,
+  showTodoAction = false,
+  isTodosActive = false,
   onToggleTodos,
 }: HeaderProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -44,8 +48,9 @@ export default function Header({
   }, [canEditTitle]);
 
   const handleTitleSubmit = () => {
-    if (titleValue.trim()) {
-      onTitleChange(titleValue.trim());
+    const nextTitle = titleValue.trim();
+    if (nextTitle) {
+      onTitleChange(nextTitle);
     } else {
       setTitleValue(title);
     }
@@ -55,38 +60,38 @@ export default function Header({
   const formatLastSaved = () => {
     if (!lastSaved) return '';
 
-    const now = new Date();
-    const diff = now.getTime() - lastSaved.getTime();
+    const diff = Date.now() - lastSaved.getTime();
     const minutes = Math.floor(diff / 60000);
 
     if (minutes < 1) return '刚刚保存';
-    if (minutes < 60) return `${minutes}分钟前保存`;
-    return lastSaved.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) + ' 保存';
+    if (minutes < 60) return `${minutes} 分钟前保存`;
+    return `${lastSaved.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })} 保存`;
   };
 
+  const hasDocActions = showShare || showCommentAction || showTodoAction;
+
   return (
-    <header className="app-soft-surface h-14 shrink-0 border-b border-yuque-border/70 bg-white/92 px-4">
-      {/* Left side - Title */}
-      <div className="flex h-full min-w-0 items-center gap-4">
+    <header className="app-soft-surface flex h-14 shrink-0 items-center justify-between gap-4 border-b border-yuque-border/70 bg-white/92 px-4">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
         {isEditingTitle && canEditTitle ? (
           <input
             type="text"
             value={titleValue}
-            onChange={(e) => setTitleValue(e.target.value)}
+            onChange={(event) => setTitleValue(event.target.value)}
             onBlur={handleTitleSubmit}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleTitleSubmit();
-              if (e.key === 'Escape') {
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') handleTitleSubmit();
+              if (event.key === 'Escape') {
                 setTitleValue(title);
                 setIsEditingTitle(false);
               }
             }}
-            className="text-lg font-semibold text-yuque-text bg-transparent border border-yuque-primary rounded px-2 py-1 focus:outline-none flex-1 min-w-0"
+            className="min-w-0 flex-1 rounded-lg border border-yuque-primary bg-transparent px-2 py-1 text-lg font-semibold text-yuque-text focus:outline-none"
             autoFocus
           />
         ) : (
           <h1
-            className={`text-lg font-semibold text-yuque-text truncate transition-colors ${
+            className={`truncate text-lg font-semibold text-yuque-text transition-colors ${
               canEditTitle ? 'cursor-pointer hover:text-yuque-primary' : ''
             }`}
             onClick={() => {
@@ -99,73 +104,72 @@ export default function Header({
           </h1>
         )}
 
-        {/* Status indicator */}
         {isEditing && (
-          <span className="shrink-0 flex items-center gap-1 rounded-full bg-yellow-50 px-2 py-1 text-xs text-yellow-600 shadow-sm">
-            <span className="w-1.5 h-1.5 bg-yellow-500 rounded-full animate-pulse" />
+          <span className="flex shrink-0 items-center gap-1 rounded-full bg-yellow-50 px-2 py-1 text-xs text-yellow-600 shadow-sm">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-yellow-500" />
             未保存
           </span>
         )}
       </div>
 
-      {/* Right side - Actions */}
-      <div className="flex items-center gap-2">
-        {/* Save button */}
-        {isEditing && (
-          <button
-            onClick={onSave}
-            className="flex items-center gap-2 rounded-xl bg-yuque-primary px-4 py-2 text-sm font-medium text-white shadow-sm hover:-translate-y-0.5 hover:bg-blue-600 hover:shadow-md"
-          >
-            <Save className="w-4 h-4" />
-            保存
-          </button>
-        )}
-
-        {/* Last saved time */}
+      <div className="flex shrink-0 items-center gap-2">
         {lastSaved && !isEditing && (
-          <span className="flex items-center gap-1 text-xs text-yuque-textMuted">
-            <Clock className="w-3 h-3" />
+          <span className="hidden items-center gap-1 text-xs text-yuque-textMuted sm:flex">
+            <Clock className="h-3 w-3" />
             {formatLastSaved()}
           </span>
         )}
 
-        {/* Divider */}
-        {showShare && <div className="w-px h-6 bg-gray-200 mx-2" />}
-
-        {/* Toggle buttons */}
-        {showComments && (
+        {isEditing && (
           <button
+            type="button"
+            onClick={onSave}
+            className="inline-flex items-center gap-2 rounded-xl bg-yuque-primary px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:-translate-y-0.5 hover:bg-blue-600 hover:shadow-md"
+          >
+            <Save className="h-4 w-4" />
+            保存
+          </button>
+        )}
+
+        {hasDocActions && <div className="mx-1 h-6 w-px bg-gray-200" />}
+
+        {showCommentAction && onToggleComments && (
+          <button
+            type="button"
             onClick={onToggleComments}
-            className={`rounded-xl p-2 ${
-              showComments
+            className={`rounded-xl p-2 transition ${
+              isCommentsActive
                 ? 'bg-blue-50 text-blue-500 shadow-sm'
                 : 'text-gray-400 hover:bg-gray-100 hover:text-blue-500'
             }`}
+            aria-label="评论"
           >
-            <MessageCircle className="w-5 h-5" />
+            <MessageCircle className="h-5 w-5" />
           </button>
         )}
 
-        {showTodos && (
+        {showTodoAction && onToggleTodos && (
           <button
+            type="button"
             onClick={onToggleTodos}
-            className={`rounded-xl p-2 ${
-              showTodos
+            className={`rounded-xl p-2 transition ${
+              isTodosActive
                 ? 'bg-green-50 text-green-500 shadow-sm'
                 : 'text-gray-400 hover:bg-gray-100 hover:text-green-500'
             }`}
+            aria-label="待办"
           >
-            <CheckCircle2 className="w-5 h-5" />
+            <CheckCircle2 className="h-5 w-5" />
           </button>
         )}
 
-        {/* Share button */}
         {showShare && onShare && (
           <button
+            type="button"
             onClick={onShare}
-            className="flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-yuque-textSecondary hover:-translate-y-0.5 hover:bg-gray-100 hover:text-yuque-primary"
+            className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm text-yuque-textSecondary transition hover:-translate-y-0.5 hover:bg-gray-100 hover:text-yuque-primary"
           >
-            <Share2 className="w-4 h-4" />
+            <Share2 className="h-4 w-4" />
             分享
           </button>
         )}

@@ -774,10 +774,15 @@ export default function FileManagerGalleryFixed({
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <label className="relative block min-w-[240px]">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+	              <input
+	                type="text"
+	                name="file-search"
+	                autoComplete="off"
+	                autoCorrect="off"
+	                autoCapitalize="none"
+	                spellCheck={false}
+	                value={searchQuery}
+	                onChange={(event) => setSearchQuery(event.target.value)}
                 placeholder="搜索文件名或路径"
                 className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-blue-500 focus:bg-white"
               />

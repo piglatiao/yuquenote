@@ -17,7 +17,6 @@ import { documentService, DocTreeItem } from './lib/documentsApi';
 import { commentService, todoService } from './lib/servicesApi';
 import type { User, Document, Team, FileRecord } from './lib/types';
 import { useSearchParams } from 'react-router-dom';
-import './App.css';
 
 const DEFAULT_NOTES_FOLDER_NAME = '默认笔记文件夹';
 const AUTOSAVE_DELAY_MS = 1200;
@@ -30,6 +29,12 @@ interface NameDialogState {
   fallbackValue: string;
   parentId: string | null;
   docId?: string;
+}
+
+interface ShareDocumentTarget {
+  id: string;
+  title: string;
+  team_id?: string | null;
 }
 
 const APP_TABS = new Set(['docs', 'files', 'star', 'teams', 'public']);
@@ -86,6 +91,7 @@ function App() {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [searchQuery, setSearchQuery] = useState('');
   const [showShareModal, setShowShareModal] = useState(false);
+  const [shareTargetDoc, setShareTargetDoc] = useState<ShareDocumentTarget | null>(null);
   const [showComments, setShowComments] = useState(DOCUMENT_VIEW_TABS.has(initialTab) && searchParams.get('comments') === '1');
   const [showTodos, setShowTodos] = useState(DOCUMENT_VIEW_TABS.has(initialTab) && searchParams.get('todos') === '1');
   const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
@@ -414,6 +420,25 @@ function App() {
       setShowTodos(false);
     }
   }, [selectedDoc, visibleDocIds]);
+
+  useEffect(() => {
+    if (!shareTargetDoc || selectedDoc?.id !== shareTargetDoc.id) {
+      return;
+    }
+
+    if (
+      shareTargetDoc.title === selectedDoc.title &&
+      (shareTargetDoc.team_id ?? null) === (selectedDoc.team_id ?? null)
+    ) {
+      return;
+    }
+
+    setShareTargetDoc({
+      id: selectedDoc.id,
+      title: selectedDoc.title,
+      team_id: selectedDoc.team_id ?? null,
+    });
+  }, [selectedDoc?.id, selectedDoc?.title, selectedDoc?.team_id, shareTargetDoc]);
 
   const handleContentChange = useCallback((newContent: string) => {
     if (newContent === content) return;
@@ -746,6 +771,15 @@ function App() {
     }
   };
 
+  const openShareForDocument = useCallback((doc: ShareDocumentTarget) => {
+    setShareTargetDoc({
+      id: doc.id,
+      title: doc.title,
+      team_id: doc.team_id ?? null,
+    });
+    setShowShareModal(true);
+  }, []);
+
   const handleOpenFileRecord = useCallback(async (file: Pick<FileRecord, 'id' | 'team_id'>) => {
     const targetTeamId = file.team_id ?? null;
     if (targetTeamId) {
@@ -797,6 +831,13 @@ function App() {
             ? docTitle
             : '开始';
   const canShowDocActions = activeTab === 'docs' && !!selectedDoc && !showFileManager;
+  const activeShareTarget = shareTargetDoc ?? (selectedDoc
+    ? {
+        id: selectedDoc.id,
+        title: selectedDoc.title,
+        team_id: selectedDoc.team_id ?? null,
+      }
+    : null);
 
   // Loading state
   if (isLoading) {
@@ -830,6 +871,7 @@ function App() {
         onRequestRenameDoc={handleRequestRenameDoc}
         onDeleteDoc={handleDeleteDoc}
         onToggleStar={handleToggleStar}
+        onShareDoc={openShareForDocument}
         onLogout={handleLogout}
         onSessionChange={handleSessionChange}
         onUserRefresh={handleUserRefresh}
@@ -852,10 +894,16 @@ function App() {
           lastSaved={canShowDocActions ? lastSaved : undefined}
           canEditTitle={canShowDocActions}
           showShare={canShowDocActions}
-          onShare={() => setShowShareModal(true)}
-          showComments={canShowDocActions}
+          onShare={() => {
+            if (selectedDoc) {
+              openShareForDocument(selectedDoc);
+            }
+          }}
+          showCommentAction={canShowDocActions}
+          isCommentsActive={showComments}
           onToggleComments={() => setShowComments(!showComments)}
-          showTodos={canShowDocActions}
+          showTodoAction={canShowDocActions}
+          isTodosActive={showTodos}
           onToggleTodos={() => setShowTodos(!showTodos)}
         />
 
@@ -964,14 +1012,17 @@ function App() {
         onCancel={() => setNameDialog(null)}
       />
 
-      {activeTab === 'docs' && selectedDoc && (
+      {showShareModal && activeShareTarget && (
         <ResourceShareModal
           isOpen={showShareModal}
-          onClose={() => setShowShareModal(false)}
+          onClose={() => {
+            setShowShareModal(false);
+            setShareTargetDoc(null);
+          }}
           resourceType="document"
-          resourceId={selectedDoc.id}
-          resourceName={selectedDoc.title}
-          initialTeamId={selectedDoc.team_id ?? null}
+          resourceId={activeShareTarget.id}
+          resourceName={activeShareTarget.title}
+          initialTeamId={activeShareTarget.team_id ?? null}
         />
       )}
     </div>

@@ -111,6 +111,11 @@ export default function ShareCenterPanel({
     shareToken: string;
   } | null>(null);
   const [isSavingTransfer, setIsSavingTransfer] = useState(false);
+  const shareListPath = currentWorkspaceTeamId
+    ? `/?tab=public&team=${encodeURIComponent(currentWorkspaceTeamId)}`
+    : '/?tab=public';
+  const buildShareViewPath = (shareToken: string) =>
+    `/share/${shareToken}?returnTo=${encodeURIComponent(shareListPath)}`;
 
   const isPersonalMode = !currentWorkspaceTeamId;
   const activeWorkspaceLabel = workspaceLabel || (currentWorkspaceTeamId ? '当前空间' : '个人空间');
@@ -356,7 +361,7 @@ export default function ShareCenterPanel({
                             )}
                           </div>
                           <Link
-                            to={`/share/${document.share_token}`}
+                            to={buildShareViewPath(document.share_token)}
                             className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"
                           >
                             <Eye className="h-4 w-4" />
@@ -476,7 +481,7 @@ export default function ShareCenterPanel({
                             </div>
                           </div>
                           <Link
-                            to={`/share/${file.share_token}`}
+                            to={buildShareViewPath(file.share_token)}
                             className="inline-flex shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"
                           >
                             <Eye className="h-4 w-4" />

@@ -46,6 +46,7 @@ interface WorkspaceSidebarProps {
   onRequestRenameDoc: (id: string, title: string) => void;
   onDeleteDoc: (id: string) => void;
   onToggleStar: (id: string) => void;
+  onShareDoc: (doc: Pick<DocTreeItem, 'id' | 'title' | 'team_id'>) => void;
   onLogout: () => void;
   onSessionChange: () => void;
   onUserRefresh: () => void;
@@ -106,6 +107,7 @@ export default function WorkspaceSidebar({
   onRequestRenameDoc,
   onDeleteDoc,
   onToggleStar,
+  onShareDoc,
   onLogout,
   onSessionChange,
   onUserRefresh,
@@ -1407,9 +1409,14 @@ export default function WorkspaceSidebar({
           <div className="flex items-center gap-2">
             <label className="relative flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={searchQuery}
+	              <input
+	                type="text"
+	                name="workspace-search"
+	                autoComplete="off"
+	                autoCorrect="off"
+	                autoCapitalize="none"
+	                spellCheck={false}
+	                value={searchQuery}
                 onChange={(event) => onSearchChange(event.target.value)}
                 placeholder="搜索"
                 className="w-full rounded-2xl border border-slate-200 bg-white py-2.5 pl-10 pr-16 text-sm outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10"
@@ -1509,8 +1516,8 @@ export default function WorkspaceSidebar({
               {contextTarget?.is_starred ? '取消收藏' : '收藏'}
             </button>
 
-            {contextTarget?.icon === 'folder' && (
-              <>
+	            {contextTarget?.icon === 'folder' && (
+	              <>
                 <button
                   type="button"
                   onClick={() => {
@@ -1533,11 +1540,34 @@ export default function WorkspaceSidebar({
                   <FolderPlus className="h-4 w-4" />
                   新建文件夹
                 </button>
-              </>
-            )}
+	              </>
+	            )}
 
-            <button
-              type="button"
+	            {contextTarget?.icon !== 'folder' && (
+	              <>
+	                <button
+	                  type="button"
+	                  onClick={() => {
+	                    if (contextTarget) {
+	                      onShareDoc({
+	                        id: contextTarget.id,
+	                        title: contextTarget.title,
+	                        team_id: contextTarget.team_id ?? null,
+	                      });
+	                    }
+	                    setContextMenu(null);
+	                  }}
+	                  className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+	                >
+	                  <Globe className="h-4 w-4" />
+	                  分享
+	                </button>
+	                <div className="my-1 h-px bg-slate-100" />
+	              </>
+	            )}
+
+	            <button
+	              type="button"
               onClick={() => {
                 if (contextTarget) {
                   onRequestRenameDoc(contextTarget.id, contextTarget.title);

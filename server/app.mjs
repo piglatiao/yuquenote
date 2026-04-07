@@ -659,6 +659,58 @@ function canAccessShareLink(userId, link, payload, providedPassword = null) {
   return { allowed: false, status: 403, message: 'Share visibility is invalid.' };
 }
 
+function getRequestOrigin(req) {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const rawProto = Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto;
+  const rawHost = Array.isArray(forwardedHost) ? forwardedHost[0] : forwardedHost;
+  const protocol = String(rawProto || 'http').split(',')[0].trim() || 'http';
+  const host = String(rawHost || req.headers.host || `127.0.0.1:${API_PORT}`).split(',')[0].trim();
+  return `${protocol}://${host}`;
+}
+
+function absolutizeUploadUrl(req, value) {
+  const rawValue = sanitizeNullable(value);
+  if (!rawValue || !rawValue.startsWith('/uploads/')) {
+    return rawValue;
+  }
+  return new URL(rawValue, getRequestOrigin(req)).toString();
+}
+
+function absolutizeUploadsInHtml(req, html) {
+  if (typeof html !== 'string' || !html.includes('/uploads/')) {
+    return html;
+  }
+
+  return html.replace(
+    /(src|href)=(["'])(\/uploads\/[^"']*)\2/g,
+    (_match, attribute, quote, resourceUrl) => `${attribute}=${quote}${absolutizeUploadUrl(req, resourceUrl)}${quote}`,
+  );
+}
+
+function serializeSharedDocument(req, document) {
+  if (!document) {
+    return null;
+  }
+
+  return {
+    ...document,
+    content: absolutizeUploadsInHtml(req, document.content || ''),
+  };
+}
+
+function serializeSharedFile(req, file) {
+  if (!file) {
+    return null;
+  }
+
+  return {
+    ...file,
+    url: absolutizeUploadUrl(req, file.url) || file.url,
+    thumbnail_url: absolutizeUploadUrl(req, file.thumbnail_url) || file.thumbnail_url,
+  };
+}
+
 async function handleUploads(res, url) {
   const relativePath = decodeURIComponent(url.pathname.replace('/uploads/', ''));
   const fullPath = path.join(FILES_DIR, ...relativePath.split('/'));
@@ -2807,8 +2859,8 @@ async function handleApi(req, res, url) {
     const link = shareLinkRowToModel(rawLink);
     json(res, 200, {
       link,
-      document: payload?.type === 'document' ? payload.resource : null,
-      file: payload?.type === 'file' ? payload.resource : null,
+      document: payload?.type === 'document' ? serializeSharedDocument(req, payload.resource) : null,
+      file: payload?.type === 'file' ? serializeSharedFile(req, payload.resource) : null,
       team: link.team_id ? getTeamById(link.team_id) : null,
     });
     return;

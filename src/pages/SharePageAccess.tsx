@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft,
   BookOpen,
@@ -121,8 +121,90 @@ function buildErrorState(status: number, message: string): ErrorState {
   };
 }
 
+function resolveReturnPath(rawValue: string | null) {
+  if (!rawValue) {
+    return '/';
+  }
+
+  if (!rawValue.startsWith('/') || rawValue.startsWith('//')) {
+    return '/';
+  }
+
+  return rawValue;
+}
+
+function PasswordGuard({
+  password,
+  passwordError,
+  returnPath,
+  onChange,
+  onSubmit,
+}: {
+  password: string;
+  passwordError: string;
+  returnPath: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
+      <div className="w-full max-w-md">
+        <div className="mb-4">
+          <Link
+            to={returnPath}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {returnPath === '/' ? '返回首页' : '返回分享页'}
+          </Link>
+        </div>
+
+        <div className="app-card-hover app-soft-surface rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
+            <Lock className="h-8 w-8" />
+          </div>
+          <h1 className="text-center text-2xl font-semibold text-slate-900">请输入访问密码</h1>
+          <p className="mt-3 text-center text-sm leading-6 text-slate-500">
+            这条分享链接已经设置密码，输入正确密码后才可以查看内容。
+          </p>
+          <div className="mt-6 space-y-3">
+            <input
+              type="password"
+              name="share-access-password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => onChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  onSubmit();
+                }
+              }}
+              placeholder="输入访问密码"
+              className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+            />
+            {passwordError ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+                {passwordError}
+              </div>
+            ) : null}
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={!password.trim()}
+              className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              继续查看
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function SharePageAccess() {
   const { token } = useParams<{ token: string }>();
+  const [searchParams] = useSearchParams();
   const [payload, setPayload] = useState<SharedResourcePayload | null>(null);
   const [document, setDocument] = useState<Document | null>(null);
   const [file, setFile] = useState<FileRecord | null>(null);
@@ -134,6 +216,8 @@ export default function SharePageAccess() {
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [isSavingTransfer, setIsSavingTransfer] = useState(false);
+
+  const returnPath = useMemo(() => resolveReturnPath(searchParams.get('returnTo')), [searchParams]);
 
   useEffect(() => {
     const load = async () => {
@@ -156,6 +240,7 @@ export default function SharePageAccess() {
         setDocument(nextPayload.document ?? null);
         setFile(nextPayload.file ?? null);
         setRequiresPassword(false);
+        setError(null);
         if (submittedPassword) {
           notify.success('验证通过', '已解锁当前分享内容。');
         }
@@ -170,13 +255,16 @@ export default function SharePageAccess() {
             setError(null);
             notify.error('访问密码错误', '请重新输入后继续查看。');
           } else {
+            setRequiresPassword(false);
             setError(buildErrorState(loadError.status, loadError.message));
             notify.error('分享内容加载失败', loadError.message);
           }
         } else if (loadError instanceof Error) {
+          setRequiresPassword(false);
           setError(buildErrorState(500, loadError.message));
           notify.error('分享内容加载失败', loadError.message);
         } else {
+          setRequiresPassword(false);
           setError(buildErrorState(500, '分享内容加载失败。'));
           notify.error('分享内容加载失败', '请稍后重试。');
         }
@@ -188,90 +276,13 @@ export default function SharePageAccess() {
     void load();
   }, [submittedPassword, token]);
 
-  if (isLoading) {
-    return (
-      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-blue-500/30 border-t-blue-500" />
-          <p className="text-gray-500">正在加载分享内容...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error || (!document && !file) || !payload) {
-    return (
-      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
-        <div className="app-card-hover app-soft-surface w-full max-w-lg rounded-[32px] border border-slate-200 bg-white p-8 text-center shadow-sm">
-          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
-            <ShieldAlert className="h-8 w-8" />
-          </div>
-          <h1 className="text-2xl font-semibold text-slate-900">{error?.title || '分享内容不可用'}</h1>
-          <p className="mt-3 text-sm leading-6 text-slate-500">
-            {error?.message || '当前分享内容无法展示，请稍后重试。'}
-          </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <Link
-              to="/"
-              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              {error?.status === 401 ? '返回首页登录' : '返回首页'}
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (requiresPassword) {
-    return (
-      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
-        <div className="app-card-hover app-soft-surface w-full max-w-md rounded-[32px] border border-slate-200 bg-white p-8 shadow-sm">
-          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
-            <Lock className="h-8 w-8" />
-          </div>
-          <h1 className="text-center text-2xl font-semibold text-slate-900">请输入访问密码</h1>
-          <p className="mt-3 text-center text-sm leading-6 text-slate-500">
-            这条分享链接已经设置密码，输入正确密码后才可以查看内容。
-          </p>
-          <div className="mt-6 space-y-3">
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => {
-                setPassword(event.target.value);
-                setPasswordError('');
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  setSubmittedPassword(password.trim());
-                }
-              }}
-              placeholder="输入访问密码"
-              className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
-            />
-            {passwordError && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
-                {passwordError}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => setSubmittedPassword(password.trim())}
-              disabled={!password.trim()}
-              className="w-full rounded-2xl bg-blue-600 px-4 py-3 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
-            >
-              继续查看
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const visibility = visibilityMeta[payload.link.visibility] || visibilityMeta.link;
-  const VisibilityIcon = visibility.icon;
+  const handleSubmitPassword = () => {
+    const nextPassword = password.trim();
+    if (!nextPassword) {
+      return;
+    }
+    setSubmittedPassword(nextPassword);
+  };
 
   const handleSaveSharedResource = async (targetId: string | null) => {
     if (!token) {
@@ -298,44 +309,118 @@ export default function SharePageAccess() {
     }
   };
 
+  if (isLoading) {
+    return (
+      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-blue-500/30 border-t-blue-500" />
+          <p className="text-gray-500">正在加载分享内容...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (requiresPassword) {
+    return (
+      <PasswordGuard
+        password={password}
+        passwordError={passwordError}
+        returnPath={returnPath}
+        onChange={(value) => {
+          setPassword(value);
+          setPasswordError('');
+        }}
+        onSubmit={handleSubmitPassword}
+      />
+    );
+  }
+
+  if (error || (!document && !file) || !payload) {
+    return (
+      <div className="app-page-enter flex min-h-screen items-center justify-center bg-slate-50 px-4">
+        <div className="app-card-hover app-soft-surface w-full max-w-lg rounded-[32px] border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-50 text-rose-500">
+            <ShieldAlert className="h-8 w-8" />
+          </div>
+          <h1 className="text-2xl font-semibold text-slate-900">{error?.title || '分享内容不可用'}</h1>
+          <p className="mt-3 text-sm leading-6 text-slate-500">
+            {error?.message || '当前分享内容无法展示，请稍后重试。'}
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <Link
+              to={returnPath}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {returnPath === '/' ? '返回首页' : '返回分享页'}
+            </Link>
+            {error?.status === 401 && returnPath !== '/' ? (
+              <Link
+                to="/"
+                className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+              >
+                去首页登录
+              </Link>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const visibility = visibilityMeta[payload.link.visibility] || visibilityMeta.link;
+  const VisibilityIcon = visibility.icon;
+
   return (
     <div className="app-page-enter min-h-screen bg-slate-50">
       <header className="app-soft-surface border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
-              <BookOpen className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <div className="font-semibold text-slate-900">语雀笔记</div>
-              <div className="mt-1 text-sm text-slate-500">{document ? '笔记分享' : '文件分享'}</div>
-            </div>
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-4">
+          <div>
+            <Link
+              to={returnPath}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              {returnPath === '/' ? '返回首页' : '返回分享页'}
+            </Link>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-sm ${visibility.className}`}>
-              <VisibilityIcon className="h-4 w-4" />
-              {visibility.label}
-            </span>
-            {payload.team && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-600">
-                <Users className="h-4 w-4" />
-                {payload.team.name}
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600">
+                <BookOpen className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <div className="font-semibold text-slate-900">语雀笔记</div>
+                <div className="mt-1 text-sm text-slate-500">{document ? '笔记分享' : '文件分享'}</div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-sm ${visibility.className}`}>
+                <VisibilityIcon className="h-4 w-4" />
+                {visibility.label}
               </span>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowTransferModal(true)}
-              className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100"
-            >
-              转存到我的{document ? '笔记' : '文件'}
-            </button>
+              {payload.team ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-600">
+                  <Users className="h-4 w-4" />
+                  {payload.team.name}
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setShowTransferModal(true)}
+                className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100"
+              >
+                转存到我的{document ? '笔记' : '文件'}
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-8">
-        {document && (
+        {document ? (
           <div className="app-card-hover app-section-enter overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-8 py-6">
               <h1 className="text-3xl font-bold text-slate-900">{document.title}</h1>
@@ -346,9 +431,9 @@ export default function SharePageAccess() {
 
             <div className="prose-yuque share-content max-w-none px-8 py-6" dangerouslySetInnerHTML={{ __html: document.content }} />
           </div>
-        )}
+        ) : null}
 
-        {file && (
+        {file ? (
           <div className="app-card-hover app-section-enter overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
             <div className="flex flex-col gap-4 border-b border-slate-100 px-8 py-6 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
@@ -374,25 +459,25 @@ export default function SharePageAccess() {
             </div>
 
             <div className="bg-slate-950 px-8 py-8">
-              {file.type === 'image' && (
+              {file.type === 'image' ? (
                 <img src={file.url} alt={file.name} className="mx-auto max-h-[70vh] max-w-full rounded-2xl object-contain" />
-              )}
+              ) : null}
 
-              {file.type === 'video' && (
+              {file.type === 'video' ? (
                 <video src={file.url} controls className="mx-auto max-h-[70vh] max-w-full rounded-2xl" />
-              )}
+              ) : null}
 
-              {file.type === 'audio' && (
+              {file.type === 'audio' ? (
                 <div className="flex min-h-[240px] items-center justify-center">
                   <audio src={file.url} controls className="w-full max-w-2xl" />
                 </div>
-              )}
+              ) : null}
 
-              {file.type === 'pdf' && (
+              {file.type === 'pdf' ? (
                 <iframe src={file.url} className="h-[70vh] w-full rounded-2xl bg-white" title={file.name} />
-              )}
+              ) : null}
 
-              {!['image', 'video', 'audio', 'pdf'].includes(file.type) && (
+              {!['image', 'video', 'audio', 'pdf'].includes(file.type) ? (
                 <div className="rounded-3xl bg-white px-8 py-16 text-center">
                   <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-slate-100">
                     {getFileIcon(file.type)}
@@ -400,10 +485,10 @@ export default function SharePageAccess() {
                   <h2 className="text-lg font-semibold text-slate-900">当前文件类型暂不支持在线预览</h2>
                   <p className="mt-2 text-sm text-slate-500">文件已持久化保存到本地磁盘，可以直接下载查看。</p>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
-        )}
+        ) : null}
       </main>
 
       <ShareTransferModal
