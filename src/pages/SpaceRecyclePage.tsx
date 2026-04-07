@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   File,
@@ -73,7 +73,6 @@ function resolveFileIcon(type: FileRecord['type']) {
 export default function SpaceRecyclePage() {
   const navigate = useNavigate();
   const { teamId = '' } = useParams();
-  const [searchParams] = useSearchParams();
   const [payload, setPayload] = useState<TeamRecyclePayload | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
@@ -85,12 +84,7 @@ export default function SpaceRecyclePage() {
   const [isSavingTransfer, setIsSavingTransfer] = useState(false);
 
   const handleBack = () => {
-    // 检查是否从回收站列表页面进入
-    if (searchParams.get('from') === 'list') {
-      navigate(-1);
-    } else {
-      navigate('/');
-    }
+    navigate('/spaces/recycle');
   };
 
   const load = async () => {
@@ -170,15 +164,14 @@ export default function SpaceRecyclePage() {
                 className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
               >
                 <ArrowLeft className="h-4 w-4" />
-                返回上一级
+                回收站
               </button>
 
               <div className="hidden h-10 w-px bg-slate-200 lg:block" />
 
               <div className="min-w-0">
-                <div className="text-2xl font-semibold text-slate-900">
-                  {payload?.team.name || '空间回收站'}
-                </div>
+                <div className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">空间回收站</div>
+                <div className="mt-1 text-2xl font-semibold text-slate-900">{payload?.team.name || '未命名空间'}</div>
                 <div className="mt-1 text-sm text-slate-500">
                   已解散空间的内容仅保留查看与转存，不恢复原空间。
                 </div>

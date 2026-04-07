@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Archive,
-  ArrowLeft,
   Clock,
   FolderOpen,
   Loader2,
@@ -32,11 +31,6 @@ export default function DissolvedTeamsRecyclePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const handleBack = () => {
-    // 回收站列表页面直接返回首页
-    navigate('/');
-  };
-
   const load = async () => {
     setIsLoading(true);
     setError('');
@@ -60,28 +54,13 @@ export default function DissolvedTeamsRecyclePage() {
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-6 py-8">
         <section className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex min-w-0 items-center gap-4">
-              <button
-                type="button"
-                onClick={handleBack}
-                className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 transition hover:bg-slate-50"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                返回上一级
-              </button>
-
-              <div className="hidden h-10 w-px bg-slate-200 lg:block" />
-
-              <div className="min-w-0">
-                <div className="flex items-center gap-3">
-                  <Archive className="h-6 w-6 text-slate-400" />
-                  <div className="text-2xl font-semibold text-slate-900">
-                    回收站
-                  </div>
-                </div>
-                <div className="mt-1 text-sm text-slate-500">
-                  已解散空间的内容仅保留查看与转存，不恢复原空间。
-                </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                <Archive className="h-6 w-6 text-slate-400" />
+                <div className="text-2xl font-semibold text-slate-900">回收站</div>
+              </div>
+              <div className="mt-1 text-sm text-slate-500">
+                集中展示处于保留期内的已解散空间，支持查看各空间的保留状态与可转存内容。
               </div>
             </div>
 
@@ -125,7 +104,7 @@ export default function DissolvedTeamsRecyclePage() {
                 <button
                   key={team.id}
                   type="button"
-                  onClick={() => navigate(`/spaces/${encodeURIComponent(team.id)}/recycle?from=list`)}
+                  onClick={() => navigate(`/spaces/${encodeURIComponent(team.id)}/recycle`)}
                   className="rounded-[32px] border border-slate-200 bg-white p-6 text-left shadow-sm transition hover:border-emerald-200 hover:bg-emerald-50/50"
                 >
                   <div className="flex items-start gap-4">
