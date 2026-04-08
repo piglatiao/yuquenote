@@ -273,6 +273,65 @@ export function userNotificationRowToModel(row) {
   };
 }
 
+function normalizeMusicSourceType(value) {
+  return value === 'qq_music' ? value : 'qq_music';
+}
+
+function normalizeMusicQuality(value) {
+  return value === 'm4a' || value === '128' || value === '320' ? value : '128';
+}
+
+function normalizeMusicSourceConfig(value) {
+  const parsed = value && typeof value === 'object' ? value : {};
+  const cookie = typeof parsed.cookie === 'string' ? parsed.cookie.trim() : null;
+
+  return {
+    cookie: cookie || null,
+    quality: normalizeMusicQuality(parsed.quality),
+  };
+}
+
+export function musicSourceRowToModel(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    type: normalizeMusicSourceType(row.type),
+    name: row.name,
+    config: normalizeMusicSourceConfig(parseJsonOrDefault(row.config_json, {})),
+    is_enabled: Boolean(row.is_enabled),
+    is_default: Boolean(row.is_default),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export function musicPlayerStateRowToModel(row) {
+  if (!row) {
+    return null;
+  }
+
+  const parsedQueue = parseJsonOrDefault(row.queue_json, []);
+  const queue = Array.isArray(parsedQueue) ? parsedQueue : [];
+
+  return {
+    user_id: row.user_id,
+    active_source_id: sanitizeNullable(row.active_source_id),
+    queue,
+    current_index: Math.max(0, Number(row.current_index ?? 0)),
+    current_time: Math.max(0, Number(row.current_time ?? 0)),
+    volume: Math.min(1, Math.max(0, Number(row.volume ?? 1))),
+    is_muted: Boolean(row.is_muted),
+    is_expanded: Boolean(row.is_expanded),
+    is_playing: Boolean(row.is_playing),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 export function normalizeShareVisibility(value) {
   if (value === 'team') return 'space';
   if (value === 'public') return 'link';
@@ -517,6 +576,32 @@ db.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS music_sources (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'qq_music',
+    name TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS music_player_states (
+    user_id TEXT PRIMARY KEY,
+    active_source_id TEXT,
+    queue_json TEXT NOT NULL DEFAULT '[]',
+    current_index INTEGER NOT NULL DEFAULT 0,
+    current_time REAL NOT NULL DEFAULT 0,
+    volume REAL NOT NULL DEFAULT 1,
+    is_muted INTEGER NOT NULL DEFAULT 0,
+    is_expanded INTEGER NOT NULL DEFAULT 0,
+    is_playing INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 ensureColumn('documents', 'team_id', 'TEXT');
@@ -680,6 +765,111 @@ export function getShareLinkRowByToken(token) {
 
 export function getShareLinkRowById(id) {
   return db.prepare('SELECT * FROM share_links WHERE id = ?').get(id) || null;
+}
+
+function createDefaultMusicSource(userId) {
+  const timestamp = nowIso();
+  const id = newId();
+
+  db.prepare(`
+    INSERT INTO music_sources (id, user_id, type, name, config_json, is_enabled, is_default, created_at, updated_at)
+    VALUES (?, ?, 'qq_music', ?, ?, 1, 1, ?, ?)
+  `).run(id, userId, 'QQ音乐', JSON.stringify({ quality: '128', cookie: null }), timestamp, timestamp);
+
+  return musicSourceRowToModel(db.prepare('SELECT * FROM music_sources WHERE id = ?').get(id));
+}
+
+function getRawMusicSourcesForUser(userId) {
+  return db
+    .prepare('SELECT * FROM music_sources WHERE user_id = ? ORDER BY is_default DESC, is_enabled DESC, created_at ASC')
+    .all(userId);
+}
+
+function getPreferredMusicSourceRow(userId) {
+  return db
+    .prepare(`
+      SELECT *
+      FROM music_sources
+      WHERE user_id = ?
+      ORDER BY is_default DESC, is_enabled DESC, created_at ASC
+      LIMIT 1
+    `)
+    .get(userId);
+}
+
+export function ensureDefaultMusicSource(userId) {
+  const rows = getRawMusicSourcesForUser(userId);
+
+  if (rows.length === 0) {
+    return createDefaultMusicSource(userId);
+  }
+
+  const defaultRow = rows.find((row) => Number(row.is_default) === 1);
+  if (defaultRow && Number(defaultRow.is_enabled) === 1) {
+    return musicSourceRowToModel(defaultRow);
+  }
+
+  const fallbackRow = rows.find((row) => Number(row.is_enabled) === 1) || rows[0];
+  const timestamp = nowIso();
+
+  db.prepare('UPDATE music_sources SET is_default = 0, updated_at = ? WHERE user_id = ?').run(timestamp, userId);
+  db.prepare('UPDATE music_sources SET is_enabled = 1, is_default = 1, updated_at = ? WHERE id = ?').run(
+    timestamp,
+    fallbackRow.id,
+  );
+
+  return musicSourceRowToModel(db.prepare('SELECT * FROM music_sources WHERE id = ?').get(fallbackRow.id));
+}
+
+export function listMusicSourcesForUser(userId) {
+  ensureDefaultMusicSource(userId);
+  return getRawMusicSourcesForUser(userId).map(musicSourceRowToModel);
+}
+
+export function getMusicSourceById(id, userId) {
+  const row = db.prepare('SELECT * FROM music_sources WHERE id = ? AND user_id = ?').get(id, userId);
+  return musicSourceRowToModel(row);
+}
+
+export function ensureMusicPlayerState(userId) {
+  const defaultSource = ensureDefaultMusicSource(userId);
+  const existingRow = db.prepare('SELECT * FROM music_player_states WHERE user_id = ?').get(userId);
+
+  if (!existingRow) {
+    const timestamp = nowIso();
+    db.prepare(`
+      INSERT INTO music_player_states (
+        user_id, active_source_id, queue_json, current_index, current_time, volume, is_muted, is_expanded, is_playing, created_at, updated_at
+      )
+      VALUES (?, ?, '[]', 0, 0, 1, 0, 0, 0, ?, ?)
+    `).run(userId, defaultSource?.id ?? null, timestamp, timestamp);
+
+    return musicPlayerStateRowToModel(db.prepare('SELECT * FROM music_player_states WHERE user_id = ?').get(userId));
+  }
+
+  const activeSourceId = sanitizeNullable(existingRow.active_source_id);
+  const activeSource = activeSourceId
+    ? db.prepare('SELECT * FROM music_sources WHERE id = ? AND user_id = ?').get(activeSourceId, userId)
+    : null;
+
+  if (activeSource && Number(activeSource.is_enabled) === 1) {
+    return musicPlayerStateRowToModel(existingRow);
+  }
+
+  const fallbackSource = getPreferredMusicSourceRow(userId);
+  const nextActiveSourceId = fallbackSource?.id ?? defaultSource?.id ?? null;
+
+  db.prepare('UPDATE music_player_states SET active_source_id = ?, updated_at = ? WHERE user_id = ?').run(
+    nextActiveSourceId,
+    nowIso(),
+    userId,
+  );
+
+  return musicPlayerStateRowToModel(db.prepare('SELECT * FROM music_player_states WHERE user_id = ?').get(userId));
+}
+
+export function getMusicPlayerStateByUserId(userId) {
+  return ensureMusicPlayerState(userId);
 }
 
 export function getTeamById(id, options = {}) {

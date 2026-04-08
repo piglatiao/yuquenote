@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { chromium } from 'playwright';
 import {
   DATA_DIR,
   DB_PATH,
@@ -14,6 +15,8 @@ import {
   deleteDocumentRecursive,
   documentRowToModel,
   fileRowToModel,
+  getMusicPlayerStateByUserId,
+  getMusicSourceById,
   getDocumentById,
   getFolderById,
   getFileById,
@@ -33,6 +36,7 @@ import {
   listDocuments,
   listFiles,
   listFolders,
+  listMusicSourcesForUser,
   listNotificationsForUser,
   listPendingInvitationsForUser,
   listPublicDocuments,
@@ -57,7 +61,10 @@ import {
   shareLinkRowToModel,
   todoRowToModel,
   verifyPassword,
+  ensureDefaultMusicSource,
+  ensureMusicPlayerState,
 } from './db.mjs';
+import { getQQMusicLyric, normalizeQQQuality, resolveQQMusicTrack, searchQQMusicTracks } from './musicProviders.mjs';
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
 const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
@@ -65,13 +72,466 @@ const SERVER_HOST = process.env.HOST || process.env.YUQUE_HOST || '0.0.0.0';
 const DIST_DIR = path.resolve(process.env.YUQUE_STATIC_DIR || path.join(ROOT_DIR, 'dist'));
 const RESOURCE_TYPES = new Set(['document', 'file']);
 const DISSOLVED_TEAM_RETENTION_DAYS = 7;
+const MAX_MUSIC_QUEUE_LENGTH = 40;
+const MAX_MUSIC_SEARCH_RESULTS = 20;
 const DEFAULT_TRANSFER_DOCUMENT_FOLDER_NAME = '转存笔记文件夹';
 const DEFAULT_TRANSFER_FILE_FOLDER_NAME = '转存文件文件夹';
+const QQ_MUSIC_LOGIN_SESSION_TTL_MS = 1000 * 60 * 8;
+const QQ_MUSIC_LOGIN_CONFIG = {
+  pageUrl: 'https://y.qq.com/',
+  userAgent:
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+  viewport: {
+    width: 1440,
+    height: 980,
+  },
+  launchTimeoutMs: 30000,
+};
+const qqMusicLoginSessions = new Map();
+const QQ_MUSIC_AUTH_COOKIE_NAMES = new Set([
+  'uin',
+  'p_uin',
+  'wxuin',
+  'skey',
+  'p_skey',
+  'pt4_token',
+  'qm_keyst',
+  'qqmusic_key',
+]);
+const QQ_MUSIC_LOGIN_TRIGGER_SELECTORS = [
+  '.top_login__link',
+  'a.top_login__link',
+  'text=登录',
+  'a:has-text("登录")',
+  'button:has-text("登录")',
+];
+const QQ_MUSIC_WECHAT_QR_SELECTORS = [
+  'img.js_qrcode_img',
+  'img.qrcode',
+  '.js_qrcode_img',
+  '.web_qrcode_img',
+];
+const QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES = [
+  process.env.QQ_MUSIC_BROWSER_PATH,
+  process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+].filter(Boolean);
 
 function addDays(isoString, days) {
   const date = new Date(isoString);
   date.setDate(date.getDate() + days);
   return date.toISOString();
+}
+
+async function launchQQMusicLoginBrowser() {
+  const launchErrors = [];
+
+  try {
+    return await chromium.launch({
+      headless: true,
+      timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+    });
+  } catch (error) {
+    launchErrors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  for (const executablePath of QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES) {
+    if (!executablePath || !existsSync(executablePath)) {
+      continue;
+    }
+
+    try {
+      return await chromium.launch({
+        headless: true,
+        executablePath,
+        timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+      });
+    } catch (error) {
+      launchErrors.push(`${executablePath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(
+    `未检测到可用浏览器，请先安装 Playwright Chromium，或配置 QQ_MUSIC_BROWSER_PATH。${launchErrors.length ? ` ${launchErrors[0]}` : ''}`,
+  );
+}
+
+function getQQMusicWechatFrame(page) {
+  return page.frames().find((frame) => frame.url().includes('open.weixin.qq.com/connect/qrconnect')) ?? null;
+}
+
+async function findVisibleLocatorAcrossScopes(page, selectors, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline && !page.isClosed()) {
+    const scopes = [page, ...page.frames()];
+
+    for (const scope of scopes) {
+      for (const selector of selectors) {
+        try {
+          const locator = scope.locator(selector).first();
+          if (await locator.count() > 0 && await locator.isVisible()) {
+            return locator;
+          }
+        } catch {
+          // Ignore locator errors while the page is still rendering.
+        }
+      }
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  return null;
+}
+
+async function waitForQQMusicWechatFrame(page, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline && !page.isClosed()) {
+    const frame = getQQMusicWechatFrame(page);
+    if (frame) {
+      return frame;
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  return null;
+}
+
+async function captureQQMusicWechatQrImageData(page, frame) {
+  const activeFrame = frame ?? getQQMusicWechatFrame(page);
+  if (!activeFrame) {
+    return null;
+  }
+
+  for (const selector of QQ_MUSIC_WECHAT_QR_SELECTORS) {
+    try {
+      const locator = activeFrame.locator(selector).first();
+      if (await locator.count() > 0) {
+        await locator.evaluate(async (element) => {
+          if (!(element instanceof HTMLImageElement)) {
+            return;
+          }
+
+          if (element.complete && element.naturalWidth > 0) {
+            return;
+          }
+
+          await new Promise((resolve) => {
+            const done = () => resolve(null);
+            element.addEventListener('load', done, { once: true });
+            element.addEventListener('error', done, { once: true });
+            setTimeout(done, 5000);
+          });
+        });
+
+        const src = await locator.getAttribute('src');
+        if (src) {
+          try {
+            const qrUrl = new URL(src, activeFrame.url()).toString();
+            const response = await fetch(qrUrl, {
+              headers: {
+                'User-Agent': QQ_MUSIC_LOGIN_CONFIG.userAgent,
+                Referer: activeFrame.url(),
+              },
+            });
+            if (response.ok) {
+              const buffer = Buffer.from(await response.arrayBuffer());
+              if (buffer.length > 0) {
+                return `data:${response.headers.get('content-type') || 'image/png'};base64,${buffer.toString('base64')}`;
+              }
+            }
+          } catch {
+            // Fall back to element screenshot if direct fetch fails.
+          }
+        }
+
+        const box = await locator.boundingBox();
+        if (!box || box.width < 40 || box.height < 40) {
+          continue;
+        }
+
+        const buffer = await locator.screenshot({ type: 'png' });
+        return `data:image/png;base64,${buffer.toString('base64')}`;
+      }
+    } catch {
+      // Ignore screenshot errors and continue with fallback selectors.
+    }
+  }
+
+  return null;
+}
+
+async function isWechatFrameStateVisible(frame, selectors) {
+  if (!frame) {
+    return false;
+  }
+
+  for (const selector of selectors) {
+    try {
+      const locator = frame.locator(selector).first();
+      if (await locator.count() > 0 && await locator.isVisible()) {
+        return true;
+      }
+    } catch {
+      // Ignore transient frame state errors.
+    }
+  }
+
+  return false;
+}
+
+function serializeBrowserCookies(cookies) {
+  return cookies
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .join('; ');
+}
+
+async function getQQMusicAuthorizedCookieString(context) {
+  const cookies = await context.cookies();
+  const relevantCookies = cookies.filter((cookie) => {
+    const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+    return domain.endsWith('qq.com') || domain.endsWith('y.qq.com');
+  });
+
+  const hasAuthCookie = relevantCookies.some((cookie) => QQ_MUSIC_AUTH_COOKIE_NAMES.has(cookie.name));
+  if (!hasAuthCookie) {
+    return '';
+  }
+
+  return serializeBrowserCookies(relevantCookies);
+}
+
+async function closeQQMusicLoginSessionResources(session) {
+  if (!session) {
+    return;
+  }
+
+  const browser = session.browser ?? null;
+  session.browser = null;
+  session.context = null;
+  session.page = null;
+
+  if (browser) {
+    try {
+      await browser.close();
+    } catch {
+      // Ignore browser cleanup failures.
+    }
+  }
+}
+
+function cleanupQQMusicLoginSessions() {
+  const nowValue = Date.now();
+
+  qqMusicLoginSessions.forEach((session, sessionId) => {
+    const createdAtValue = new Date(session.created_at).getTime();
+    if (!Number.isFinite(createdAtValue) || nowValue - createdAtValue > QQ_MUSIC_LOGIN_SESSION_TTL_MS) {
+      session.status = 'expired';
+      session.message = '二维码已过期，请重新获取。';
+      session.updated_at = now();
+      void closeQQMusicLoginSessionResources(session);
+      qqMusicLoginSessions.delete(sessionId);
+    }
+  });
+}
+
+function serializeQQMusicLoginSession(session) {
+  if (!session) {
+    return null;
+  }
+
+  return {
+    id: session.id,
+    provider: 'qq_music',
+    login_mode: 'wechat',
+    status: session.status,
+    qr_image_data_url: session.qr_image_data_url ?? null,
+    cookie: session.cookie ?? null,
+    message: session.message ?? null,
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  };
+}
+
+function getQQMusicLoginSessionForUser(sessionId, userId) {
+  cleanupQQMusicLoginSessions();
+  const session = qqMusicLoginSessions.get(sessionId) ?? null;
+  if (!session || session.user_id !== userId) {
+    return null;
+  }
+
+  if (Date.now() - new Date(session.created_at).getTime() > QQ_MUSIC_LOGIN_SESSION_TTL_MS) {
+    session.status = 'expired';
+    session.message = '二维码已过期，请重新获取。';
+    session.updated_at = now();
+  }
+
+  return session;
+}
+
+async function followQQMusicLoginRedirects(startUrl, cookieJar) {
+  let nextUrl = startUrl;
+
+  for (let index = 0; index < 8 && nextUrl; index += 1) {
+    const result = await requestQQMusicLogin(nextUrl, {
+      cookieJar,
+      responseType: 'text',
+    });
+    const location = result.location
+      ? new URL(result.location, nextUrl).toString()
+      : null;
+
+    if (location && result.status >= 300 && result.status < 400) {
+      nextUrl = location;
+      continue;
+    }
+
+    return result;
+  }
+
+  return null;
+}
+
+async function createQQMusicWechatLoginSession(userId) {
+  cleanupQQMusicLoginSessions();
+
+  const browser = await launchQQMusicLoginBrowser();
+  const context = await browser.newContext({
+    viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
+    locale: 'zh-CN',
+    userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
+  });
+  const page = await context.newPage();
+
+  try {
+    await page.goto(QQ_MUSIC_LOGIN_CONFIG.pageUrl, {
+      waitUntil: 'networkidle',
+      timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+    });
+
+    const loginTrigger = await findVisibleLocatorAcrossScopes(page, QQ_MUSIC_LOGIN_TRIGGER_SELECTORS, 15000);
+    if (!loginTrigger) {
+      throw new Error('未找到 QQ音乐 登录入口。');
+    }
+
+    await loginTrigger.click();
+    const wechatFrame = await waitForQQMusicWechatFrame(page, 20000);
+    if (!wechatFrame) {
+      throw new Error('未找到微信登录二维码。');
+    }
+
+    const qrImageDataUrl = await captureQQMusicWechatQrImageData(page, wechatFrame);
+    if (!qrImageDataUrl) {
+      throw new Error('未能捕获微信登录二维码。');
+    }
+
+    const timestamp = now();
+    const session = {
+      id: newId(),
+      user_id: userId,
+      status: 'pending',
+      message: '请使用微信扫码登录。',
+      cookie: null,
+      qr_image_data_url: qrImageDataUrl,
+      created_at: timestamp,
+      updated_at: timestamp,
+      browser,
+      context,
+      page,
+    };
+
+    qqMusicLoginSessions.set(session.id, session);
+    return session;
+  } catch (error) {
+    await closeQQMusicLoginSessionResources({ browser, context, page });
+    throw error;
+  }
+}
+
+async function refreshQQMusicWechatLoginSession(session) {
+  if (!session) {
+    throw new Error('登录会话不存在。');
+  }
+
+  if (session.status === 'authorized' || session.status === 'failed' || session.status === 'expired') {
+    return session;
+  }
+
+  if (Date.now() - new Date(session.created_at).getTime() > QQ_MUSIC_LOGIN_SESSION_TTL_MS) {
+    session.status = 'expired';
+    session.message = '二维码已过期，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (!session.page || session.page.isClosed()) {
+    session.status = 'failed';
+    session.message = '登录窗口已关闭，请重新获取二维码。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  const authorizedCookie = await getQQMusicAuthorizedCookieString(session.context);
+  if (authorizedCookie) {
+    session.status = 'authorized';
+    session.cookie = authorizedCookie;
+    session.message = '微信登录成功，可直接保存。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  const wechatFrame = getQQMusicWechatFrame(session.page);
+  if (!wechatFrame) {
+    session.status = 'pending';
+    session.message = '正在等待登录状态回跳。';
+    session.updated_at = now();
+    return session;
+  }
+
+  if (await isWechatFrameStateVisible(wechatFrame, ['#wx_after_scan', '.js_wx_after_scan'])) {
+    session.status = 'scanned';
+    session.message = '已扫码，请在微信中点击允许。';
+    session.updated_at = now();
+    return session;
+  }
+
+  if (await isWechatFrameStateVisible(wechatFrame, ['#wx_after_cancel', '.js_wx_after_cancel'])) {
+    session.status = 'failed';
+    session.message = '你已取消此次微信登录，请重新获取二维码。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (await isWechatFrameStateVisible(wechatFrame, ['.js_web_qrcode_reload', '.js_refresh_qrcode'])) {
+    session.status = 'expired';
+    session.message = '二维码已失效，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (!session.qr_image_data_url) {
+    session.qr_image_data_url = await captureQQMusicWechatQrImageData(session.page, wechatFrame);
+  }
+
+  session.status = 'pending';
+  session.message = '等待微信扫码。';
+  session.updated_at = now();
+  return session;
 }
 
 function getCurrentUserId(req) {
@@ -585,6 +1045,159 @@ function canCreateShareLink(userId, resourceType, resource, visibility) {
     : canViewFile(userId, resource);
 }
 
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeMusicText(value, fallback, maxLength = 160) {
+  const text = String(value ?? '').trim();
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeMusicSourceName(value, fallback = 'QQ音乐') {
+  return normalizeMusicText(value, fallback, 60);
+}
+
+function normalizeMusicSourceConfigInput(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const cookie = typeof raw.cookie === 'string' ? raw.cookie.trim() : '';
+
+  return {
+    cookie: cookie || null,
+    quality: normalizeQQQuality(raw.quality),
+  };
+}
+
+function getAvailableMusicSources(userId, includeDisabled = false) {
+  const sources = listMusicSourcesForUser(userId);
+  return includeDisabled ? sources : sources.filter((source) => source.is_enabled);
+}
+
+function resolveMusicSourceForUser(userId, requestedSourceId = null, includeDisabled = false) {
+  const sources = getAvailableMusicSources(userId, includeDisabled);
+
+  if (requestedSourceId) {
+    return sources.find((source) => source.id === requestedSourceId) ?? null;
+  }
+
+  return sources.find((source) => source.is_default) ?? sources[0] ?? null;
+}
+
+function normalizeMusicTrackPayload(track, source) {
+  const rawTrack = track && typeof track === 'object' ? track : {};
+  const providerTrackId = String(
+    rawTrack.provider_track_id ?? rawTrack.songmid ?? rawTrack.track_id ?? rawTrack.id ?? '',
+  ).trim();
+
+  if (!providerTrackId || !source) {
+    return null;
+  }
+
+  const streamUrl = sanitizeNullable(rawTrack.stream_url);
+  const coverUrl = sanitizeNullable(rawTrack.cover_url);
+  const resolvedAt = sanitizeNullable(rawTrack.resolved_at);
+  const lyricLines = Array.isArray(rawTrack.lyric_lines)
+    ? rawTrack.lyric_lines
+        .map((line) => {
+          const time = Math.max(0, Number(line?.time || 0) || 0);
+          const text = String(line?.text || '').trim();
+          const translation = String(line?.translation || '').trim();
+
+          if (!text) {
+            return null;
+          }
+
+          return {
+            time,
+            text,
+            translation,
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const title = normalizeMusicText(rawTrack.title, 'Untitled');
+  const artist = normalizeMusicText(rawTrack.artist, 'Unknown Artist');
+  const album = normalizeMusicText(rawTrack.album, 'Unknown Album');
+  const duration = clampNumber(Number(rawTrack.duration || 0) || 0, 0, 60 * 60 * 4);
+  const stableId = String(rawTrack.id || `${source.id}:${providerTrackId}`).trim();
+
+  return {
+    id: stableId,
+    source_id: source.id,
+    source_type: source.type,
+    source_name: source.name,
+    provider_track_id: providerTrackId,
+    title,
+    artist,
+    album,
+    duration,
+    cover_url: coverUrl,
+    stream_url: streamUrl,
+    resolved_at: resolvedAt,
+    lyric_lines: lyricLines,
+  };
+}
+
+function normalizeMusicQueuePayload(queue, sourceMap, fallbackSource) {
+  if (!Array.isArray(queue)) {
+    return [];
+  }
+
+  const normalizedQueue = [];
+
+  for (const item of queue.slice(0, MAX_MUSIC_QUEUE_LENGTH)) {
+    const preferredSourceId = sanitizeNullable(item?.source_id) || fallbackSource?.id || null;
+    const source = preferredSourceId ? sourceMap.get(preferredSourceId) ?? null : null;
+    if (!source) {
+      continue;
+    }
+
+    const normalizedTrack = normalizeMusicTrackPayload(item, source);
+    if (normalizedTrack) {
+      normalizedQueue.push(normalizedTrack);
+    }
+  }
+
+  return normalizedQueue;
+}
+
+async function searchTracksByMusicSource(source, keyword, page, limit) {
+  if (!source) {
+    return [];
+  }
+
+  if (source.type === 'qq_music') {
+    const tracks = await searchQQMusicTracks({
+      keyword,
+      page,
+      limit,
+      cookie: source.config?.cookie || '',
+    });
+
+    return tracks
+      .map((track) => normalizeMusicTrackPayload(track, source))
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+async function resolveTrackByMusicSource(source, providerTrackId) {
+  if (!source) {
+    throw new Error('Music source is not available.');
+  }
+
+  if (source.type === 'qq_music') {
+    return resolveQQMusicTrack({
+      songmid: providerTrackId,
+      quality: source.config?.quality,
+      cookie: source.config?.cookie || '',
+    });
+  }
+
+  throw new Error('Unsupported music source type.');
+}
+
 function resolveSharePayload(link) {
   if (!link) return null;
   if (link.document_id) {
@@ -946,6 +1559,356 @@ async function handleApi(req, res, url) {
     `).run(nextEmail, nextNickname, nextAvatarUrl, nextPasswordHash, now(), userId);
 
     json(res, 200, { user: publicUser(getUserById(userId)) });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/music/sources') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, listMusicSourcesForUser(currentUser.id));
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/sources') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const sourceType = body.type && body.type !== 'qq_music' ? String(body.type) : 'qq_music';
+    if (sourceType !== 'qq_music') {
+      json(res, 400, { error: 'Only QQ音乐 is supported right now.' });
+      return;
+    }
+
+    const timestamp = now();
+    const id = newId();
+    const name = normalizeMusicSourceName(body.name, 'QQ音乐');
+    const config = normalizeMusicSourceConfigInput(body.config);
+    const shouldSetDefault = Boolean(body.is_default);
+    const isEnabled = shouldSetDefault ? true : body.is_enabled !== undefined ? Boolean(body.is_enabled) : true;
+
+    if (shouldSetDefault) {
+      db.prepare('UPDATE music_sources SET is_default = 0, updated_at = ? WHERE user_id = ?').run(timestamp, currentUser.id);
+    }
+
+    db.prepare(`
+      INSERT INTO music_sources (id, user_id, type, name, config_json, is_enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      currentUser.id,
+      sourceType,
+      name,
+      JSON.stringify(config),
+      Number(isEnabled),
+      Number(shouldSetDefault),
+      timestamp,
+      timestamp,
+    );
+
+    ensureDefaultMusicSource(currentUser.id);
+    ensureMusicPlayerState(currentUser.id);
+
+    json(res, 201, getMusicSourceById(id, currentUser.id));
+    return;
+  }
+
+  if (req.method === 'PATCH' && /^\/api\/music\/sources\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const sourceId = decodeURIComponent(url.pathname.replace('/api/music/sources/', ''));
+    const existing = getMusicSourceById(sourceId, currentUser.id);
+    if (!existing) {
+      json(res, 404, { error: 'Music source not found.' });
+      return;
+    }
+
+    const body = await readJsonBody(req);
+    const userSources = listMusicSourcesForUser(currentUser.id);
+    const enabledSources = userSources.filter((source) => source.is_enabled);
+    const mergedConfig =
+      body.config && typeof body.config === 'object'
+        ? { ...existing.config, ...body.config }
+        : existing.config;
+    const nextName = body.name !== undefined ? normalizeMusicSourceName(body.name, existing.name) : existing.name;
+    let nextIsEnabled = body.is_enabled !== undefined ? Boolean(body.is_enabled) : existing.is_enabled;
+    const wantsDefault = body.is_default === true;
+
+    if (!nextIsEnabled && existing.is_enabled && enabledSources.length <= 1) {
+      json(res, 400, { error: 'At least one music source must remain enabled.' });
+      return;
+    }
+
+    if (wantsDefault) {
+      nextIsEnabled = true;
+      db.prepare('UPDATE music_sources SET is_default = 0, updated_at = ? WHERE user_id = ?').run(now(), currentUser.id);
+    }
+
+    const nextIsDefault = wantsDefault ? true : existing.is_default && nextIsEnabled;
+
+    db.prepare(`
+      UPDATE music_sources
+      SET name = ?, config_json = ?, is_enabled = ?, is_default = ?, updated_at = ?
+      WHERE id = ? AND user_id = ?
+    `).run(
+      nextName,
+      JSON.stringify(normalizeMusicSourceConfigInput(mergedConfig)),
+      Number(nextIsEnabled),
+      Number(nextIsDefault),
+      now(),
+      sourceId,
+      currentUser.id,
+    );
+
+    ensureDefaultMusicSource(currentUser.id);
+    ensureMusicPlayerState(currentUser.id);
+
+    json(res, 200, getMusicSourceById(sourceId, currentUser.id));
+    return;
+  }
+
+  if (req.method === 'DELETE' && /^\/api\/music\/sources\/[^/]+$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const sourceId = decodeURIComponent(url.pathname.replace('/api/music/sources/', ''));
+    const existing = getMusicSourceById(sourceId, currentUser.id);
+    if (!existing) {
+      json(res, 404, { error: 'Music source not found.' });
+      return;
+    }
+
+    db.prepare('DELETE FROM music_sources WHERE id = ? AND user_id = ?').run(sourceId, currentUser.id);
+    db.prepare('UPDATE music_player_states SET active_source_id = NULL, updated_at = ? WHERE user_id = ? AND active_source_id = ?').run(
+      now(),
+      currentUser.id,
+      sourceId,
+    );
+
+    ensureDefaultMusicSource(currentUser.id);
+    ensureMusicPlayerState(currentUser.id);
+
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/qq-login/sessions') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    try {
+      const session = await createQQMusicWechatLoginSession(currentUser.id);
+      json(res, 201, serializeQQMusicLoginSession(session));
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : '音乐登录初始化失败。' });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/music\/qq-login\/sessions\/[^/]+\/status$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const sessionId = decodeURIComponent(
+      url.pathname
+        .replace('/api/music/qq-login/sessions/', '')
+        .replace('/status', ''),
+    );
+    const session = getQQMusicLoginSessionForUser(sessionId, currentUser.id);
+    if (!session) {
+      json(res, 404, { error: '音乐登录会话不存在。' });
+      return;
+    }
+
+    try {
+      const refreshedSession = await refreshQQMusicWechatLoginSession(session);
+      json(res, 200, serializeQQMusicLoginSession(refreshedSession));
+    } catch (error) {
+      session.status = 'failed';
+      session.message = error instanceof Error ? error.message : '音乐登录失败。';
+      session.updated_at = now();
+      json(res, 200, serializeQQMusicLoginSession(session));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/search') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const keyword = String(body.keyword || '').trim();
+    if (!keyword) {
+      json(res, 400, { error: 'Search keyword is required.' });
+      return;
+    }
+
+    const sourceId = sanitizeNullable(body.source_id);
+    const source = resolveMusicSourceForUser(currentUser.id, sourceId, false);
+    if (!source) {
+      json(res, 404, { error: 'Available music source not found.' });
+      return;
+    }
+
+    try {
+      const tracks = await searchTracksByMusicSource(
+        source,
+        keyword,
+        Math.max(1, Number(body.page || 1)),
+        clampNumber(Number(body.limit || MAX_MUSIC_SEARCH_RESULTS) || MAX_MUSIC_SEARCH_RESULTS, 1, 50),
+      );
+
+      json(res, 200, {
+        keyword,
+        source,
+        tracks,
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Music search failed.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/resolve') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const trackPayload = body.track && typeof body.track === 'object' ? body.track : null;
+    const requestedSourceId = sanitizeNullable(body.source_id) || sanitizeNullable(trackPayload?.source_id);
+    const source = requestedSourceId
+      ? getMusicSourceById(requestedSourceId, currentUser.id)
+      : resolveMusicSourceForUser(currentUser.id, null, true);
+
+    if (!source) {
+      json(res, 404, { error: 'Music source not found.' });
+      return;
+    }
+
+    const providerTrackId = String(
+      body.provider_track_id ?? trackPayload?.provider_track_id ?? trackPayload?.songmid ?? '',
+    ).trim();
+
+    if (!providerTrackId) {
+      json(res, 400, { error: 'Track id is required.' });
+      return;
+    }
+
+    try {
+      const [resolved, lyricLines] = await Promise.all([
+        resolveTrackByMusicSource(source, providerTrackId),
+        source.type === 'qq_music'
+          ? getQQMusicLyric({
+              songmid: providerTrackId,
+              cookie: source.config?.cookie || '',
+            }).catch(() => [])
+          : Promise.resolve([]),
+      ]);
+      const normalizedTrack = normalizeMusicTrackPayload(
+        {
+          ...trackPayload,
+          provider_track_id: providerTrackId,
+          stream_url: resolved.stream_url,
+          resolved_at: now(),
+          lyric_lines: lyricLines,
+        },
+        source,
+      );
+
+      json(res, 200, {
+        track: {
+          ...normalizedTrack,
+          quality: resolved.quality,
+        },
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Track playback url could not be resolved.' });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/music/player-state') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    json(res, 200, getMusicPlayerStateByUserId(currentUser.id));
+    return;
+  }
+
+  if (req.method === 'PUT' && url.pathname === '/api/music/player-state') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const currentState = getMusicPlayerStateByUserId(currentUser.id);
+    const allSources = listMusicSourcesForUser(currentUser.id);
+    const enabledSources = allSources.filter((source) => source.is_enabled);
+    const sourceMap = new Map(allSources.map((source) => [source.id, source]));
+    const fallbackSource =
+      enabledSources.find((source) => source.is_default) ?? enabledSources[0] ?? allSources[0] ?? null;
+    let activeSourceId = currentState?.active_source_id ?? fallbackSource?.id ?? null;
+
+    if (body.active_source_id !== undefined) {
+      const requestedActiveSourceId = sanitizeNullable(body.active_source_id);
+      if (requestedActiveSourceId) {
+        const requestedSource = sourceMap.get(requestedActiveSourceId);
+        if (!requestedSource || !requestedSource.is_enabled) {
+          json(res, 400, { error: 'Selected music source is not available.' });
+          return;
+        }
+      }
+      activeSourceId = requestedActiveSourceId;
+    }
+
+    if (activeSourceId && !enabledSources.some((source) => source.id === activeSourceId)) {
+      activeSourceId = fallbackSource?.id ?? null;
+    }
+
+    const queue =
+      body.queue !== undefined
+        ? normalizeMusicQueuePayload(body.queue, sourceMap, fallbackSource)
+        : Array.isArray(currentState?.queue)
+          ? normalizeMusicQueuePayload(currentState.queue, sourceMap, fallbackSource)
+          : [];
+
+    const maxIndex = Math.max(0, queue.length - 1);
+    const nextCurrentIndex =
+      body.current_index !== undefined
+        ? clampNumber(Number(body.current_index || 0) || 0, 0, maxIndex)
+        : clampNumber(Number(currentState?.current_index || 0) || 0, 0, maxIndex);
+    const nextCurrentTime =
+      queue.length === 0
+        ? 0
+        : Math.max(0, Number(body.current_time ?? currentState?.current_time ?? 0) || 0);
+    const nextVolume = clampNumber(
+      Number(body.volume ?? currentState?.volume ?? 1) || 0,
+      0,
+      1,
+    );
+    const nextMuted = body.is_muted !== undefined ? Boolean(body.is_muted) : Boolean(currentState?.is_muted);
+    const nextExpanded = body.is_expanded !== undefined ? Boolean(body.is_expanded) : Boolean(currentState?.is_expanded);
+    const nextPlaying = body.is_playing !== undefined ? Boolean(body.is_playing) : Boolean(currentState?.is_playing);
+
+    db.prepare(`
+      UPDATE music_player_states
+      SET active_source_id = ?, queue_json = ?, current_index = ?, current_time = ?, volume = ?, is_muted = ?, is_expanded = ?, is_playing = ?, updated_at = ?
+      WHERE user_id = ?
+    `).run(
+      activeSourceId,
+      JSON.stringify(queue),
+      queue.length === 0 ? 0 : nextCurrentIndex,
+      nextCurrentTime,
+      nextVolume,
+      Number(nextMuted),
+      Number(nextExpanded),
+      Number(nextPlaying),
+      now(),
+      currentUser.id,
+    );
+
+    json(res, 200, getMusicPlayerStateByUserId(currentUser.id));
     return;
   }
 

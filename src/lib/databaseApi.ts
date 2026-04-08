@@ -3,6 +3,12 @@ import type {
   Document,
   FileRecord,
   Folder,
+  MusicLoginSession,
+  MusicPlayerState,
+  MusicSearchPayload,
+  MusicSource,
+  MusicSourceConfig,
+  MusicTrack,
   PublicDocumentSummary,
   PublicFileSummary,
   ResourcePermission,
@@ -487,5 +493,84 @@ export const publicResourceService = {
       params.set('teamId', teamId ?? '__personal__');
     }
     return apiRequest<PublicFileSummary[]>(`/public/files${params.size ? `?${params.toString()}` : ''}`);
+  },
+};
+
+export const musicService = {
+  async getSources(): Promise<MusicSource[]> {
+    return apiRequest<MusicSource[]>('/music/sources');
+  },
+
+  async createSource(payload: {
+    name: string;
+    type?: MusicSource['type'];
+    config?: MusicSourceConfig;
+    is_enabled?: boolean;
+    is_default?: boolean;
+  }): Promise<MusicSource> {
+    return apiRequest<MusicSource>('/music/sources', toJsonRequest(payload, { method: 'POST' }));
+  },
+
+  async updateSource(
+    sourceId: string,
+    payload: {
+      name?: string;
+      config?: MusicSourceConfig;
+      is_enabled?: boolean;
+      is_default?: boolean;
+    },
+  ): Promise<MusicSource> {
+    return apiRequest<MusicSource>(`/music/sources/${encodeURIComponent(sourceId)}`, toJsonRequest(payload, { method: 'PATCH' }));
+  },
+
+  async deleteSource(sourceId: string): Promise<{ ok: boolean }> {
+    return apiRequest<{ ok: boolean }>(`/music/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' });
+  },
+
+  async search(keyword: string, sourceId?: string | null, page = 1, limit = 20): Promise<MusicSearchPayload> {
+    return apiRequest<MusicSearchPayload>(
+      '/music/search',
+      toJsonRequest(
+        {
+          keyword,
+          source_id: sourceId || null,
+          page,
+          limit,
+        },
+        { method: 'POST' },
+      ),
+    );
+  },
+
+  async resolveTrack(track: MusicTrack, sourceId?: string | null): Promise<MusicTrack> {
+    const response = await apiRequest<{ track: MusicTrack }>(
+      '/music/resolve',
+      toJsonRequest(
+        {
+          source_id: sourceId || track.source_id || null,
+          provider_track_id: track.provider_track_id,
+          track,
+        },
+        { method: 'POST' },
+      ),
+    );
+
+    return response.track;
+  },
+
+  async getPlayerState(): Promise<MusicPlayerState> {
+    return apiRequest<MusicPlayerState>('/music/player-state');
+  },
+
+  async updatePlayerState(payload: Partial<MusicPlayerState>): Promise<MusicPlayerState> {
+    return apiRequest<MusicPlayerState>('/music/player-state', toJsonRequest(payload, { method: 'PUT' }));
+  },
+
+  async createWechatLoginSession(): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>('/music/qq-login/sessions', toJsonRequest({}, { method: 'POST' }));
+  },
+
+  async getWechatLoginSessionStatus(sessionId: string): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>(`/music/qq-login/sessions/${encodeURIComponent(sessionId)}/status`);
   },
 };

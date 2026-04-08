@@ -180,6 +180,78 @@ export interface TeamRecyclePayload {
   files: FileRecord[];
 }
 
+export interface MusicSourceConfig {
+  cookie?: string | null;
+  quality?: 'm4a' | '128' | '320';
+}
+
+export interface MusicSource {
+  id: string;
+  user_id: string;
+  type: 'qq_music';
+  name: string;
+  config: MusicSourceConfig;
+  is_enabled: boolean;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MusicLyricLine {
+  time: number;
+  text: string;
+  translation?: string;
+}
+
+export interface MusicTrack {
+  id: string;
+  source_id: string;
+  source_type: MusicSource['type'];
+  source_name?: string;
+  provider_track_id: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  cover_url: string | null;
+  stream_url?: string | null;
+  resolved_at?: string | null;
+  quality?: MusicSourceConfig['quality'];
+  lyric_lines?: MusicLyricLine[];
+}
+
+export interface MusicPlayerState {
+  user_id: string;
+  active_source_id: string | null;
+  queue: MusicTrack[];
+  current_index: number;
+  current_time: number;
+  volume: number;
+  is_muted: boolean;
+  is_expanded: boolean;
+  is_playing: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MusicSearchPayload {
+  keyword: string;
+  source: MusicSource;
+  tracks: MusicTrack[];
+}
+
+export interface MusicLoginSession {
+  id: string;
+  provider: 'qq_music';
+  login_mode: 'wechat';
+  status: 'pending' | 'scanned' | 'authorized' | 'expired' | 'failed';
+  qr_image_data_url: string | null;
+  cookie: string | null;
+  message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Comment {
   id: string;
   document_id: string;
