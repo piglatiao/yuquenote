@@ -240,6 +240,25 @@ export interface MusicSearchPayload {
   tracks: MusicTrack[];
 }
 
+export interface MusicCollectionPlaylistSummary {
+  id: string;
+  title: string;
+  cover_url: string | null;
+  song_count: number;
+  kind: 'liked_songs' | 'created' | 'collected';
+}
+
+export interface MusicCollectionsPayload {
+  source: MusicSource;
+  uin: string;
+  nickname: string | null;
+  avatar_url: string | null;
+  liked_songs_playlist: MusicCollectionPlaylistSummary | null;
+  liked_tracks: MusicTrack[];
+  created_playlists: MusicCollectionPlaylistSummary[];
+  collected_playlists: MusicCollectionPlaylistSummary[];
+}
+
 export interface MusicLoginSession {
   id: string;
   provider: 'qq_music';

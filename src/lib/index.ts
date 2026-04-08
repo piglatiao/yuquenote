@@ -9,6 +9,7 @@ export type {
   Folder,
   MusicLyricLine,
   MusicLoginSession,
+  MusicCollectionsPayload,
   MusicPlayerState,
   MusicSearchPayload,
   MusicSource,

@@ -64,7 +64,7 @@ import {
   ensureDefaultMusicSource,
   ensureMusicPlayerState,
 } from './db.mjs';
-import { getQQMusicLyric, normalizeQQQuality, resolveQQMusicTrack, searchQQMusicTracks } from './musicProviders.mjs';
+import { getQQMusicCollections, getQQMusicLyric, normalizeQQQuality, resolveQQMusicTrack, searchQQMusicTracks } from './musicProviders.mjs';
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
 const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
@@ -1767,6 +1767,40 @@ async function handleApi(req, res, url) {
       });
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : 'Music search failed.' });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/music/collections') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const requestedSourceId = sanitizeNullable(url.searchParams.get('sourceId'));
+    const source = requestedSourceId
+      ? getMusicSourceById(requestedSourceId, currentUser.id)
+      : resolveMusicSourceForUser(currentUser.id, null, false);
+
+    if (!source) {
+      json(res, 404, { error: 'Music source not found.' });
+      return;
+    }
+
+    if (source.type !== 'qq_music') {
+      json(res, 400, { error: 'Only QQ Music collections are supported right now.' });
+      return;
+    }
+
+    try {
+      const collections = await getQQMusicCollections({
+        cookie: source.config?.cookie || '',
+      });
+
+      json(res, 200, {
+        source,
+        ...collections,
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Failed to fetch music collections.' });
     }
     return;
   }

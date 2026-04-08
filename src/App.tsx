@@ -11,6 +11,7 @@ import ShareCenterPanel from './components/ShareCenterPanel';
 import { ResourceShareModal } from './components/ResourceShareModal';
 import TeamWorkspace from './components/TeamWorkspacePanel';
 import FavoritesPanel from './components/FavoritesPanel';
+import GlobalMusicPlayer from './components/GlobalMusicPlayer';
 import { authService } from './lib/authApi';
 import { teamService } from './lib/databaseApi';
 import { documentService, DocTreeItem } from './lib/documentsApi';
@@ -1025,6 +1026,8 @@ function App() {
           initialTeamId={activeShareTarget.team_id ?? null}
         />
       )}
+
+      <GlobalMusicPlayer />
     </div>
   );
 }

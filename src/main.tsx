@@ -6,7 +6,6 @@ import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 import './index.css'
 import './App.css'
 import App from './App.tsx'
-import GlobalMusicPlayer from './components/GlobalMusicPlayer.tsx'
 import PublicLibraryStandalone from './pages/PublicLibraryStandalone.tsx'
 import SharePageAccess from './pages/SharePageAccess.tsx'
 import DissolvedTeamsRecyclePage from './pages/DissolvedTeamsRecyclePage.tsx'
@@ -33,7 +32,6 @@ createRoot(document.getElementById('root')!).render(
             className: 'app-toast',
           }}
         />
-        <GlobalMusicPlayer />
       </BrowserRouter>
     </ErrorBoundary>
   </StrictMode>,

@@ -4,6 +4,7 @@ import type {
   FileRecord,
   Folder,
   MusicLoginSession,
+  MusicCollectionsPayload,
   MusicPlayerState,
   MusicSearchPayload,
   MusicSource,
@@ -556,6 +557,15 @@ export const musicService = {
     );
 
     return response.track;
+  },
+
+  async getCollections(sourceId?: string | null): Promise<MusicCollectionsPayload> {
+    const params = new URLSearchParams();
+    if (sourceId) {
+      params.set('sourceId', sourceId);
+    }
+
+    return apiRequest<MusicCollectionsPayload>(`/music/collections${params.size ? `?${params.toString()}` : ''}`);
   },
 
   async getPlayerState(): Promise<MusicPlayerState> {
