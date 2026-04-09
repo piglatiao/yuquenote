@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { createServer as createNetServer } from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
@@ -217,6 +218,125 @@ function resolveQQMusicBrowserExecutablePath() {
   }
 
   return undefined;
+}
+
+async function getAvailableTcpPort() {
+  return new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = address && typeof address === 'object' ? address.port : 0;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+}
+
+async function waitForQQMusicDebugBrowser(port, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  const endpoint = `http://127.0.0.1:${port}/json/version`;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(endpoint);
+      if (response.ok) {
+        return endpoint;
+      }
+    } catch {
+      // Retry until the debug endpoint is ready.
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error('QQ 登录窗口启动超时，未能连接到浏览器调试端口。');
+}
+
+async function terminateQQMusicBrowserProcess(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+      return;
+    } catch {
+      // Fall back to process.kill below.
+    }
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    // Ignore cleanup failures for already-exited processes.
+  }
+}
+
+async function launchQQMusicQqPopupContext(userId) {
+  const executablePath = resolveQQMusicBrowserExecutablePath();
+  if (!executablePath) {
+    throw new Error('未检测到可用浏览器，请先安装 Chrome/Edge，或配置 QQ_MUSIC_BROWSER_PATH。');
+  }
+
+  const userDataDir = path.join(QQ_MUSIC_LOGIN_PROFILE_ROOT, `qq-music-qq-${userId}`);
+  await mkdir(userDataDir, { recursive: true });
+
+  const debugPort = await getAvailableTcpPort();
+  const browserProcess = spawn(executablePath, [
+    `--user-data-dir=${userDataDir}`,
+    `--remote-debugging-port=${debugPort}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process',
+    '--new-window',
+    `--window-size=${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.width},${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.height}`,
+    '--window-position=120,80',
+    `--app=${QQ_MUSIC_QQ_LOGIN_PAGE_URL}`,
+  ], {
+    detached: false,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+
+  browserProcess.unref();
+
+  try {
+    await waitForQQMusicDebugBrowser(debugPort, QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs);
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+    const context = browser.contexts()[0];
+    if (!context) {
+      throw new Error('未能接管 QQ 登录窗口。');
+    }
+
+    const page =
+      context
+        .pages()
+        .find((item) => /ptlogin2\.qq\.com|xui\.ptlogin2\.qq\.com|graph\.qq\.com/i.test(item.url()))
+      ?? context.pages()[0]
+      ?? await context.newPage();
+
+    await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => null);
+
+    return {
+      browser,
+      context,
+      page,
+      isPersistentContext: true,
+      browserProcessPid: browserProcess.pid ?? null,
+      launchedExternally: true,
+    };
+  } catch (error) {
+    await terminateQQMusicBrowserProcess(browserProcess.pid ?? null);
+    throw error;
+  }
 }
 
 async function launchQQMusicLoginContext(options = {}) {
@@ -912,9 +1032,11 @@ async function closeQQMusicLoginSessionResources(session) {
 
   const context = session.context ?? null;
   const browser = session.browser ?? null;
+  const browserProcessPid = session.browserProcessPid ?? null;
   session.browser = null;
   session.context = null;
   session.page = null;
+  session.browserProcessPid = null;
 
   if (context) {
     try {
@@ -930,6 +1052,10 @@ async function closeQQMusicLoginSessionResources(session) {
     } catch {
       // Ignore browser cleanup failures.
     }
+  }
+
+  if (browserProcessPid) {
+    await terminateQQMusicBrowserProcess(browserProcessPid);
   }
 }
 
@@ -1054,7 +1180,7 @@ async function createQQMusicWechatLoginSession(userId) {
     qqMusicLoginSessions.set(session.id, session);
     return session;
   } catch (error) {
-    await closeQQMusicLoginSessionResources({ browser, context, page });
+    await closeQQMusicLoginSessionResources({ browser, context, page, browserProcessPid });
     throw error;
   }
 }
@@ -1063,12 +1189,13 @@ async function createQQMusicQqLoginSession(userId) {
   cleanupQQMusicLoginSessions();
   const popupLaunchStartedAt = Date.now();
 
-  const { browser, context, page, isPersistentContext } = await launchQQMusicLoginContext({
-    headless: false,
-    persistentProfileKey: `qq-music-qq-${userId}`,
-    viewport: QQ_MUSIC_QQ_LOGIN_POPUP_SIZE,
-    launchArgs: [`--window-size=${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.width},${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.height}`],
-  });
+  const {
+    browser,
+    context,
+    page,
+    isPersistentContext,
+    browserProcessPid,
+  } = await launchQQMusicQqPopupContext(userId);
 
   try {
     await page.goto(QQ_MUSIC_QQ_LOGIN_PAGE_URL, {
@@ -1103,6 +1230,7 @@ async function createQQMusicQqLoginSession(userId) {
       context,
       page,
       is_persistent_context: isPersistentContext,
+      browserProcessPid,
     };
 
     qqMusicLoginSessions.set(session.id, session);
