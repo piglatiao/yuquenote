@@ -1624,7 +1624,8 @@ export default function GlobalMusicPlayer() {
                             </div>
                           ) : collections ? (
                             <div className="space-y-3">
-                              <div className="rounded-[24px] border border-slate-200/80 bg-gradient-to-br from-slate-50 to-white px-4 py-4">
+                              {!selectedCollectionPlaylist ? (
+                                <div className="rounded-[24px] border border-slate-200/80 bg-gradient-to-br from-slate-50 to-white px-4 py-4">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="flex min-w-0 items-center gap-3">
                                     <div className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-slate-100">
@@ -1669,7 +1670,8 @@ export default function GlobalMusicPlayer() {
                                     <div className="mt-1 text-sm font-semibold text-slate-900">{collections.collected_playlists.length}</div>
                                   </div>
                                 </div>
-                              </div>
+                                </div>
+                              ) : null}
 
                               {!selectedCollectionPlaylist ? (
                                 <div className="rounded-[24px] border border-slate-200/80 bg-white px-3 py-3">
