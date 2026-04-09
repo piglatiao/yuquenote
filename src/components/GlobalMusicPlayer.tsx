@@ -277,6 +277,7 @@ export default function GlobalMusicPlayer() {
   const compactVolumeTrackRef = useRef<HTMLDivElement | null>(null);
   const compactVolumeDraggingRef = useRef(false);
   const coverTapTimerRef = useRef<number | null>(null);
+  const collectionsRequestIdRef = useRef(0);
 
   const currentTrack = useMemo(() => queue[currentIndex] ?? null, [queue, currentIndex]);
   const enabledSources = useMemo(() => sources.filter((source) => source.is_enabled), [sources]);
@@ -883,30 +884,37 @@ export default function GlobalMusicPlayer() {
     }
   }, [deleteSourceId, replaceQueue, syncSourcesAndSelection]);
 
+  const resetCollectionsState = useCallback(() => {
+    collectionsRequestIdRef.current += 1;
+    setCollections(null);
+    setCollectionsSourceId(null);
+    setIsLoadingCollections(false);
+    setCollectionsError('');
+    setSelectedCollectionPlaylist(null);
+    setSelectedCollectionTracks([]);
+    setCollectionPlaylistError('');
+    setIsLoadingCollectionPlaylist(false);
+  }, []);
+
   const loadCollections = useCallback(async (force = false) => {
     if (!activeSource) {
-      setCollections(null);
-      setCollectionsSourceId(null);
-      setCollectionsError('');
-      setSelectedCollectionPlaylist(null);
-      setSelectedCollectionTracks([]);
-      setCollectionPlaylistError('');
+      resetCollectionsState();
       return;
     }
 
     if (!activeSource.config.cookie?.trim()) {
-      setCollections(null);
-      setCollectionsSourceId(null);
-      setCollectionsError('');
-      setSelectedCollectionPlaylist(null);
-      setSelectedCollectionTracks([]);
-      setCollectionPlaylistError('');
+      resetCollectionsState();
       return;
     }
 
     if (!force && collectionsSourceId === activeSource.id && collections) {
       return;
     }
+
+    const requestId = collectionsRequestIdRef.current + 1;
+    collectionsRequestIdRef.current = requestId;
+    const sourceId = activeSource.id;
+    const sourceType = activeSource.type;
 
     setIsLoadingCollections(true);
     setCollectionsError('');
@@ -915,18 +923,26 @@ export default function GlobalMusicPlayer() {
     setCollectionPlaylistError('');
 
     try {
-      const nextCollections = await musicService.getCollections(activeSource.id);
+      const nextCollections = await musicService.getCollections(sourceId);
+      if (collectionsRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setCollections(nextCollections);
-      setCollectionsSourceId(activeSource.id);
+      setCollectionsSourceId(sourceId);
       setStatusText(
         nextCollections.liked_tracks.length > 0
-          ? `已同步${activeSource.type === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏`
+          ? `已同步${sourceType === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏`
           : '收藏歌单已同步',
       );
     } catch (error) {
+      if (collectionsRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const message = error instanceof Error
         ? error.message
-        : `获取${activeSource.type === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏失败。`;
+        : `获取${sourceType === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏失败。`;
       setCollections(null);
       setCollectionsSourceId(null);
       setCollectionsError(message);
@@ -935,9 +951,11 @@ export default function GlobalMusicPlayer() {
       setCollectionPlaylistError(message);
       notify.error('收藏加载失败', message);
     } finally {
-      setIsLoadingCollections(false);
+      if (collectionsRequestIdRef.current === requestId) {
+        setIsLoadingCollections(false);
+      }
     }
-  }, [activeSource, collections, collectionsSourceId]);
+  }, [activeSource, collections, collectionsSourceId, resetCollectionsState]);
 
   useEffect(() => {
     const syncUser = async () => {
@@ -1433,6 +1451,7 @@ export default function GlobalMusicPlayer() {
   const currentLyric = activeLyricIndex >= 0 ? lyricLines[activeLyricIndex] : null;
   const showCompactLoader = Boolean(busyTrackId) && !isPlaying;
   const hasSourceCookie = Boolean(sourceDraft.cookie.trim());
+  const activeSourceTypeLabel = activeSource ? getMusicSourceTypeLabel(activeSource.type) : 'QQ音乐';
   const activeSourceName = activeSource?.name ?? 'QQ音乐';
   const activeSourceHasCookie = Boolean(activeSource?.config.cookie?.trim());
   const shouldScrollCompactTitle = compactTitle.length > 12;
@@ -1827,9 +1846,9 @@ export default function GlobalMusicPlayer() {
                               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-slate-400 shadow-sm">
                                 <Heart className="h-5 w-5" />
                               </div>
-                              <div className="mt-3 text-sm font-medium text-slate-700">先登录 QQ 音乐再查看收藏</div>
+                              <div className="mt-3 text-sm font-medium text-slate-700">先登录 {activeSourceTypeLabel} 再查看收藏</div>
                               <div className="mt-1 text-xs leading-6 text-slate-500">
-                                在音乐源里完成微信或 QQ 登录后，这里会显示你的我喜欢和收藏歌单。
+                                在音乐源里完成当前音源登录后，这里会显示你的我喜欢和收藏歌单。
                               </div>
                               <button
                                 type="button"
@@ -1842,7 +1861,7 @@ export default function GlobalMusicPlayer() {
                           ) : isLoadingCollections && !collections ? (
                             <div className="rounded-3xl border border-slate-200/80 bg-slate-50/80 px-4 py-8 text-center">
                               <LoaderCircle className="mx-auto h-5 w-5 animate-spin text-sky-500" />
-                              <div className="mt-3 text-sm font-medium text-slate-700">正在同步 QQ 音乐收藏</div>
+                              <div className="mt-3 text-sm font-medium text-slate-700">正在加载{activeSourceTypeLabel}收藏歌单</div>
                               <div className="mt-1 text-xs leading-6 text-slate-500">
                                 会读取当前音源账号下的我喜欢歌曲和歌单。
                               </div>
@@ -1884,13 +1903,15 @@ export default function GlobalMusicPlayer() {
                                     </div>
                                   </div>
 
-                                  <button
-                                    type="button"
-                                    onClick={() => void loadCollections(true)}
-                                    className="shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:bg-slate-50"
-                                  >
-                                    刷新
-                                  </button>
+                              <button
+                                type="button"
+                                onClick={() => void loadCollections(true)}
+                                disabled={isLoadingCollections}
+                                className="inline-flex shrink-0 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {isLoadingCollections ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                                {isLoadingCollections ? '刷新中' : '刷新'}
+                              </button>
                                 </div>
 
                                 <div className="mt-3 grid grid-cols-3 gap-2">
