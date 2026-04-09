@@ -3,6 +3,7 @@ import type {
   Document,
   FileRecord,
   Folder,
+  MusicCaptchaSendResult,
   MusicLoginSession,
   MusicCollectionsPayload,
   MusicCollectionPlaylistDetailPayload,
@@ -610,11 +611,34 @@ export const musicService = {
     return apiRequest<MusicLoginSession>(`/music/qq-login/sessions/${encodeURIComponent(sessionId)}/status`);
   },
 
+  async createNeteaseQrLoginSession(): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>('/music/netease/qr-login/sessions', toJsonRequest({}, { method: 'POST' }));
+  },
+
+  async getNeteaseQrLoginSessionStatus(sessionId: string): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>(`/music/netease/qr-login/sessions/${encodeURIComponent(sessionId)}/status`);
+  },
+
   async loginNeteaseByPhone(payload: {
     phone: string;
     password: string;
     country_code?: string;
   }): Promise<MusicPhoneLoginResult> {
     return apiRequest<MusicPhoneLoginResult>('/music/netease/login/phone', toJsonRequest(payload, { method: 'POST' }));
+  },
+
+  async sendNeteaseCaptcha(payload: {
+    phone: string;
+    country_code?: string;
+  }): Promise<MusicCaptchaSendResult> {
+    return apiRequest<MusicCaptchaSendResult>('/music/netease/captcha/send', toJsonRequest(payload, { method: 'POST' }));
+  },
+
+  async loginNeteaseByCaptcha(payload: {
+    phone: string;
+    captcha: string;
+    country_code?: string;
+  }): Promise<MusicPhoneLoginResult> {
+    return apiRequest<MusicPhoneLoginResult>('/music/netease/login/captcha', toJsonRequest(payload, { method: 'POST' }));
   },
 };

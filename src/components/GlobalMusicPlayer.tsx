@@ -26,6 +26,8 @@ import type {
   MusicCollectionPlaylistSummary,
   MusicCollectionsPayload,
   MusicLoginSession,
+  MusicSourceLoginMode,
+  MusicSourceType,
   MusicPlayerState,
   MusicSearchPayload,
   MusicSource,
@@ -37,13 +39,20 @@ type MusicView = 'search' | 'favorites' | 'queue' | 'sources';
 
 interface SourceDraft {
   id?: string;
+  type: MusicSourceType;
   name: string;
   cookie: string;
   quality: 'm4a' | '128' | '320';
-  login_mode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'> | null;
+  login_mode: MusicSourceLoginMode | null;
+  account_name: string;
   is_enabled: boolean;
   is_default: boolean;
 }
+
+const SOURCE_TYPE_OPTIONS: Array<{ value: MusicSourceType; label: string }> = [
+  { value: 'qq_music', label: 'QQ音乐' },
+  { value: 'netease_music', label: '网易云音乐' },
+];
 
 const VIEW_ITEMS: Array<{ key: MusicView; label: string; icon: typeof Search }> = [
   { key: 'search', label: '搜索', icon: Search },
@@ -95,10 +104,12 @@ function isTrackFresh(track: MusicTrack | null) {
 function createSourceDraft(source?: MusicSource | null): SourceDraft {
   if (!source) {
     return {
+      type: 'qq_music',
       name: '',
       cookie: '',
       quality: '128',
       login_mode: null,
+      account_name: '',
       is_enabled: true,
       is_default: false,
     };
@@ -106,16 +117,25 @@ function createSourceDraft(source?: MusicSource | null): SourceDraft {
 
   return {
     id: source.id,
+    type: source.type,
     name: source.name,
     cookie: source.config.cookie ?? '',
     quality: source.config.quality ?? '128',
-    login_mode:
-      source.config.login_mode === 'qq' || source.config.login_mode === 'wechat'
-        ? source.config.login_mode
-        : null,
+    login_mode: source.config.login_mode ?? null,
+    account_name: source.config.account_name ?? '',
     is_enabled: source.is_enabled,
     is_default: source.is_default,
   };
+}
+
+function getMusicSourceTypeLabel(sourceType: MusicSourceType) {
+  return sourceType === 'netease_music' ? '网易云音乐' : 'QQ音乐';
+}
+
+function createDefaultSourceName(sourceType: MusicSourceType, existingSources: MusicSource[]) {
+  const baseLabel = getMusicSourceTypeLabel(sourceType);
+  const sameTypeCount = existingSources.filter((item) => item.type === sourceType).length;
+  return sameTypeCount > 0 ? `${baseLabel} ${sameTypeCount + 1}` : baseLabel;
 }
 
 function getQQLoginModeLabel(loginMode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>) {
@@ -131,11 +151,34 @@ function getMusicSourceLoginModeLabel(loginMode: MusicSource['config']['login_mo
     return '微信登录';
   }
 
+  if (loginMode === 'qr') {
+    return '网易账号扫码登录';
+  }
+
   if (loginMode === 'phone') {
     return '手机号登录';
   }
 
   return '未设置登录方式';
+}
+
+function getMusicSourceSummaryText(source: MusicSource) {
+  if (!source.config.cookie) {
+    return source.type === 'netease_music' ? '未登录 · 网易云音乐' : `未登录 · 音质 ${source.config.quality ?? '128'}`;
+  }
+
+  if (source.type === 'netease_music') {
+    if (source.config.login_mode === 'qr') {
+      return source.config.account_name
+        ? `已登录 · 网易账号扫码登录 · ${source.config.account_name}`
+        : '已登录 · 网易账号扫码登录';
+    }
+
+    const accountHint = source.config.account_name || '手动 Cookie';
+    return `已登录 · ${accountHint}`;
+  }
+
+  return `${getMusicSourceLoginModeLabel(source.config.login_mode)} · 音质 ${source.config.quality ?? '128'}`;
 }
 
 function getQQLoginSessionMessage(session: MusicLoginSession | null) {
@@ -150,6 +193,30 @@ function getQQLoginSessionMessage(session: MusicLoginSession | null) {
   return session.login_mode === 'qq'
     ? '请在弹出的 QQ 登录窗口中完成扫码或确认登录。'
     : '请使用微信扫码，并在手机上确认登录。';
+}
+
+function getNeteaseLoginSessionMessage(session: MusicLoginSession | null) {
+  if (!session) {
+    return '';
+  }
+
+  if (session.message?.trim()) {
+    return session.message;
+  }
+
+  if (session.status === 'scanned') {
+    return '已扫码，请在手机上确认登录。';
+  }
+
+  if (session.status === 'expired') {
+    return '二维码已失效，请重新获取。';
+  }
+
+  if (session.status === 'failed') {
+    return '网易账号登录失败，请重新获取二维码。';
+  }
+
+  return '请使用网易云音乐 App 扫码，并在手机上确认登录。';
 }
 
 export default function GlobalMusicPlayer() {
@@ -187,6 +254,8 @@ export default function GlobalMusicPlayer() {
   const [qqLoginSession, setQqLoginSession] = useState<MusicLoginSession | null>(null);
   const [isCreatingLoginSession, setIsCreatingLoginSession] = useState(false);
   const [pendingLoginMode, setPendingLoginMode] = useState<Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'> | null>(null);
+  const [neteaseLoginSession, setNeteaseLoginSession] = useState<MusicLoginSession | null>(null);
+  const [isCreatingNeteaseLoginSession, setIsCreatingNeteaseLoginSession] = useState(false);
   const [showCookieField, setShowCookieField] = useState(false);
   const [statusText, setStatusText] = useState('安静地放一首歌。');
 
@@ -631,16 +700,19 @@ export default function GlobalMusicPlayer() {
   const openCreateSourceForm = useCallback(() => {
     setShowSourceForm(true);
     setQqLoginSession(null);
+    setNeteaseLoginSession(null);
     setShowCookieField(false);
     setSourceDraft({
-      name: sources.length > 0 ? `QQ音乐 ${sources.length + 1}` : 'QQ音乐',
+      type: 'qq_music',
+      name: createDefaultSourceName('qq_music', sources),
       cookie: '',
       quality: '128',
       login_mode: null,
+      account_name: '',
       is_enabled: true,
       is_default: false,
     });
-  }, [sources.length]);
+  }, [sources]);
 
   const handleOpenQQLogin = useCallback(async (loginMode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>) => {
     setIsCreatingLoginSession(true);
@@ -668,10 +740,47 @@ export default function GlobalMusicPlayer() {
     }
   }, []);
 
+  const handleOpenNeteaseQrLogin = useCallback(async () => {
+    setIsCreatingNeteaseLoginSession(true);
+
+    try {
+      const session = await musicService.createNeteaseQrLoginSession();
+      setNeteaseLoginSession(session);
+      setSourceDraft((prev) => ({
+        ...prev,
+        login_mode: 'qr',
+      }));
+      notify.info('网易账号二维码已生成', '请使用网易云音乐 App 扫码，并在手机上确认登录。');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '网易账号登录初始化失败。';
+      notify.error('无法发起网易登录', message);
+    } finally {
+      setIsCreatingNeteaseLoginSession(false);
+    }
+  }, []);
+
+  const handleChangeSourceType = useCallback((nextType: MusicSourceType) => {
+    setQqLoginSession(null);
+    setNeteaseLoginSession(null);
+    setShowCookieField(false);
+    setSourceDraft((prev) => ({
+      ...prev,
+      type: nextType,
+      name: prev.id ? prev.name : createDefaultSourceName(nextType, sources),
+      quality: nextType === 'qq_music' ? prev.quality : '128',
+      login_mode:
+        nextType === 'qq_music'
+          ? (prev.login_mode === 'qq' || prev.login_mode === 'wechat' ? prev.login_mode : null)
+          : null,
+      account_name: nextType === 'netease_music' ? prev.account_name : '',
+    }));
+  }, [sources]);
+
   const openEditSourceForm = useCallback((source: MusicSource) => {
     setActiveView('sources');
     setShowSourceForm(true);
     setQqLoginSession(null);
+    setNeteaseLoginSession(null);
     setShowCookieField(false);
     setSourceDraft(createSourceDraft(source));
   }, []);
@@ -679,6 +788,7 @@ export default function GlobalMusicPlayer() {
   const closeSourceForm = useCallback(() => {
     setShowSourceForm(false);
     setQqLoginSession(null);
+    setNeteaseLoginSession(null);
     setShowCookieField(false);
     setSourceDraft(createSourceDraft());
   }, []);
@@ -698,8 +808,11 @@ export default function GlobalMusicPlayer() {
           name,
           config: {
             cookie: sourceDraft.cookie.trim() || null,
-            quality: sourceDraft.quality,
+            quality: sourceDraft.type === 'qq_music' ? sourceDraft.quality : '128',
             login_mode: sourceDraft.login_mode,
+            phone: null,
+            country_code: null,
+            account_name: sourceDraft.type === 'netease_music' ? (sourceDraft.account_name.trim() || null) : null,
           },
           is_enabled: sourceDraft.is_enabled,
           is_default: sourceDraft.is_default,
@@ -707,11 +820,14 @@ export default function GlobalMusicPlayer() {
       } else {
         await musicService.createSource({
           name,
-          type: 'qq_music',
+          type: sourceDraft.type,
           config: {
             cookie: sourceDraft.cookie.trim() || null,
-            quality: sourceDraft.quality,
+            quality: sourceDraft.type === 'qq_music' ? sourceDraft.quality : '128',
             login_mode: sourceDraft.login_mode,
+            phone: null,
+            country_code: null,
+            account_name: sourceDraft.type === 'netease_music' ? (sourceDraft.account_name.trim() || null) : null,
           },
           is_enabled: sourceDraft.is_enabled,
           is_default: sourceDraft.is_default,
@@ -802,9 +918,15 @@ export default function GlobalMusicPlayer() {
       const nextCollections = await musicService.getCollections(activeSource.id);
       setCollections(nextCollections);
       setCollectionsSourceId(activeSource.id);
-      setStatusText(nextCollections.liked_tracks.length > 0 ? '已同步 QQ 音乐收藏' : '收藏歌单已同步');
+      setStatusText(
+        nextCollections.liked_tracks.length > 0
+          ? `已同步${activeSource.type === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏`
+          : '收藏歌单已同步',
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : '获取 QQ 音乐收藏失败。';
+      const message = error instanceof Error
+        ? error.message
+        : `获取${activeSource.type === 'netease_music' ? '网易云音乐' : 'QQ 音乐'}收藏失败。`;
       setCollections(null);
       setCollectionsSourceId(null);
       setCollectionsError(message);
@@ -1175,6 +1297,62 @@ export default function GlobalMusicPlayer() {
       window.clearInterval(timerId);
     };
   }, [showSourceForm, qqLoginSession]);
+
+  useEffect(() => {
+    if (!showSourceForm || !neteaseLoginSession?.id) {
+      return;
+    }
+
+    if (
+      neteaseLoginSession.status === 'authorized'
+      || neteaseLoginSession.status === 'expired'
+      || neteaseLoginSession.status === 'failed'
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const timerId = window.setInterval(async () => {
+      try {
+        const nextSession = await musicService.getNeteaseQrLoginSessionStatus(neteaseLoginSession.id);
+        if (cancelled) {
+          return;
+        }
+
+        setNeteaseLoginSession(nextSession);
+        if (nextSession.status === 'authorized' && nextSession.cookie) {
+          setSourceDraft((prev) => ({
+            ...prev,
+            cookie: nextSession.cookie || '',
+            login_mode: 'qr',
+            account_name: nextSession.account_name || prev.account_name,
+          }));
+          setShowCookieField(false);
+          notify.success('网易账号登录成功', '授权已自动写入当前音乐源。');
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        const message = error instanceof Error ? error.message : '网易登录状态获取失败。';
+        setNeteaseLoginSession((prev) => (
+          prev
+            ? {
+                ...prev,
+                status: 'failed',
+                message,
+              }
+            : prev
+        ));
+      }
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timerId);
+    };
+  }, [showSourceForm, neteaseLoginSession]);
 
   useEffect(() => {
     if (!showCompactVolumeSlider) {
@@ -1588,7 +1766,7 @@ export default function GlobalMusicPlayer() {
                               </div>
                               <div className="mt-3 text-sm font-medium text-slate-700">搜索后会直接建立播放队列</div>
                               <div className="mt-1 text-xs leading-6 text-slate-500">
-                                当前支持 QQ音乐，选好音乐源后即可搜歌播放。
+                                当前支持 QQ音乐和网易云音乐，选好音乐源后即可搜歌播放。
                               </div>
                             </div>
                           ) : searchResult.tracks.length === 0 ? (
@@ -1990,11 +2168,7 @@ export default function GlobalMusicPlayer() {
                                         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">已停用</span>
                                       ) : null}
                                     </div>
-                                    <div className="mt-1 text-xs text-slate-500">
-                                      {source.config.cookie
-                                        ? `${getMusicSourceLoginModeLabel(source.config.login_mode)} · 音质 ${source.config.quality ?? '128'}`
-                                        : `未登录 · 音质 ${source.config.quality ?? '128'}`}
-                                    </div>
+                                    <div className="mt-1 text-xs text-slate-500">{getMusicSourceSummaryText(source)}</div>
                                   </button>
 
                                   <div className="flex items-center gap-1">
@@ -2055,7 +2229,9 @@ export default function GlobalMusicPlayer() {
                     {sourceDraft.id ? '编辑音乐源' : '新增音乐源'}
                   </div>
                   <div className="mt-1 text-xs leading-6 text-slate-500">
-                    支持微信扫码和 QQ 登录，授权成功后会自动写入当前音乐源。
+                    {sourceDraft.type === 'netease_music'
+                      ? '支持网易账号二维码登录，授权成功后会自动写入当前音乐源。'
+                      : '支持微信扫码和 QQ 登录，授权成功后会自动写入当前音乐源。'}
                   </div>
                 </div>
 
@@ -2071,6 +2247,22 @@ export default function GlobalMusicPlayer() {
 
               <div className="min-h-0 space-y-4 overflow-y-auto px-4 py-4">
                 <div>
+                  <label className="mb-1.5 block text-xs font-medium text-slate-600">音源类型</label>
+                  <select
+                    value={sourceDraft.type}
+                    onChange={(event) => handleChangeSourceType(event.target.value as MusicSourceType)}
+                    disabled={Boolean(sourceDraft.id)}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100 disabled:bg-slate-100 disabled:text-slate-500"
+                  >
+                    {SOURCE_TYPE_OPTIONS.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
                   <label className="mb-1.5 block text-xs font-medium text-slate-600">名称</label>
                   <input
                     value={sourceDraft.name}
@@ -2080,40 +2272,130 @@ export default function GlobalMusicPlayer() {
                         name: event.target.value,
                       }))
                     }
-                    placeholder="例如：QQ音乐"
+                    placeholder={`例如：${getMusicSourceTypeLabel(sourceDraft.type)}`}
                     className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr,116px]">
-                  <div>
+                {sourceDraft.type === 'qq_music' ? (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr,116px]">
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between gap-3">
+                        <label className="block text-xs font-medium text-slate-600">登录状态</label>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenQQLogin('wechat')}
+                            disabled={isCreatingLoginSession}
+                            className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isCreatingLoginSession && pendingLoginMode === 'wechat' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            微信扫码登录
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenQQLogin('qq')}
+                            disabled={isCreatingLoginSession}
+                            className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {isCreatingLoginSession && pendingLoginMode === 'qq' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            QQ 登录
+                          </button>
+                        </div>
+                      </div>
+
+                      {hasSourceCookie && !showCookieField ? (
+                        <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-sm text-emerald-700">
+                          <span className="font-medium">
+                            已登录
+                            {sourceDraft.login_mode ? ` · ${getQQLoginModeLabel(sourceDraft.login_mode as Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>)}` : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setShowCookieField(true)}
+                            className="text-xs text-emerald-700 transition hover:text-emerald-900"
+                          >
+                            查看 Cookie
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <textarea
+                            value={sourceDraft.cookie}
+                            onChange={(event) =>
+                              setSourceDraft((prev) => ({
+                                ...prev,
+                                cookie: event.target.value,
+                              }))
+                            }
+                            placeholder="登录成功后会自动回填，也支持手动补充。"
+                            rows={3}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                          />
+                          {hasSourceCookie ? (
+                            <div className="flex items-center justify-between text-xs text-slate-500">
+                              <span>当前已回填授权 Cookie</span>
+                              <button
+                                type="button"
+                                onClick={() => setShowCookieField(false)}
+                                className="transition hover:text-slate-800"
+                              >
+                                隐藏
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="text-xs leading-5 text-slate-500">未登录时可手动粘贴 Cookie。</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-slate-600">音质</label>
+                      <select
+                        value={sourceDraft.quality}
+                        onChange={(event) =>
+                          setSourceDraft((prev) => ({
+                            ...prev,
+                            quality: event.target.value as SourceDraft['quality'],
+                          }))
+                        }
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                      >
+                        {QUALITY_OPTIONS.map((item) => (
+                          <option key={item.value} value={item.value}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 rounded-[22px] border border-slate-200 bg-slate-50/70 p-3">
                     <div className="mb-1.5 flex items-center justify-between gap-3">
                       <label className="block text-xs font-medium text-slate-600">登录状态</label>
                       <button
                         type="button"
-                        onClick={() => void handleOpenQQLogin('wechat')}
-                        disabled={isCreatingLoginSession}
-                        className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={() => void handleOpenNeteaseQrLogin()}
+                        disabled={isCreatingNeteaseLoginSession}
+                        className="inline-flex items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isCreatingLoginSession && pendingLoginMode === 'wechat' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                        微信扫码登录
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleOpenQQLogin('qq')}
-                        disabled={isCreatingLoginSession}
-                        className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {isCreatingLoginSession && pendingLoginMode === 'qq' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                        QQ 登录
+                        {isCreatingNeteaseLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                        网易账号二维码登录
                       </button>
                     </div>
-
+                    <div className="text-xs leading-5 text-slate-500">
+                      使用网易云音乐 App 扫码并在手机上确认登录，成功后当前音源 Cookie 会自动回填。
+                    </div>
+                    <div className="text-xs leading-5 text-slate-500">
+                      这里对应的是网易云音乐音源，但网页登录主体是网易账号登录；仍然保留手动填写 Cookie 作为兜底。
+                    </div>
                     {hasSourceCookie && !showCookieField ? (
                       <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-sm text-emerald-700">
                         <span className="font-medium">
-                          已登录
-                          {sourceDraft.login_mode ? ` · ${getQQLoginModeLabel(sourceDraft.login_mode)}` : ''}
+                          {sourceDraft.login_mode === 'qr'
+                            ? `已登录 · ${sourceDraft.account_name || '网易账号扫码登录'}`
+                            : '已填写网易云 Cookie'}
                         </span>
                         <button
                           type="button"
@@ -2123,64 +2405,53 @@ export default function GlobalMusicPlayer() {
                           查看 Cookie
                         </button>
                       </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <textarea
-                          value={sourceDraft.cookie}
-                          onChange={(event) =>
-                            setSourceDraft((prev) => ({
-                              ...prev,
-                              cookie: event.target.value,
-                            }))
-                          }
-                          placeholder="登录成功后会自动回填，也支持手动补充。"
-                          rows={3}
-                          className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-                        />
-                        {hasSourceCookie ? (
-                          <div className="flex items-center justify-between text-xs text-slate-500">
-                            <span>当前已回填授权 Cookie</span>
-                            <button
-                              type="button"
-                              onClick={() => setShowCookieField(false)}
-                              className="transition hover:text-slate-800"
-                            >
-                              隐藏
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="text-xs leading-5 text-slate-500">未登录时可手动粘贴 Cookie。</div>
-                        )}
-                      </div>
-                    )}
+                    ) : null}
                   </div>
+                )}
 
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-slate-600">音质</label>
-                    <select
-                      value={sourceDraft.quality}
-                      onChange={(event) =>
-                        setSourceDraft((prev) => ({
-                          ...prev,
-                          quality: event.target.value as SourceDraft['quality'],
-                        }))
-                      }
-                      className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
-                    >
-                      {QUALITY_OPTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                {sourceDraft.type === 'netease_music' ? (
+                  hasSourceCookie && !showCookieField ? null : (
+                    <div className="space-y-2">
+                      <label className="mb-1.5 block text-xs font-medium text-slate-600">Cookie</label>
+                      <textarea
+                        value={sourceDraft.cookie}
+                        onChange={(event) =>
+                          setSourceDraft((prev) => ({
+                            ...prev,
+                            cookie: event.target.value,
+                          }))
+                        }
+                        placeholder="登录成功后会自动回填，也支持手动补充。"
+                        rows={3}
+                        className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
+                      />
+                      {hasSourceCookie ? (
+                        <div className="flex items-center justify-between text-xs text-slate-500">
+                          <span>当前已填写网易云 Cookie</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowCookieField(false)}
+                            className="transition hover:text-slate-800"
+                          >
+                            隐藏
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="text-xs leading-5 text-slate-500">
+                          请先在网易云音乐 App 登录，或先完成网易账号网页登录，再手动粘贴 Cookie。
+                        </div>
+                      )}
+                    </div>
+                  )
+                ) : null}
 
-                {qqLoginSession ? (
+                {sourceDraft.type === 'qq_music' && qqLoginSession ? (
                   <div className="rounded-[22px] border border-slate-200 bg-slate-50/70 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-slate-800">{getQQLoginModeLabel(qqLoginSession.login_mode)}</div>
+                        <div className="text-sm font-medium text-slate-800">
+                          {getQQLoginModeLabel(qqLoginSession.login_mode as Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>)}
+                        </div>
                         <div className="mt-1 text-xs leading-6 text-slate-500">
                           {getQQLoginSessionMessage(qqLoginSession)}
                         </div>
@@ -2201,7 +2472,7 @@ export default function GlobalMusicPlayer() {
                         {qqLoginSession.qr_image_data_url ? (
                           <img
                             src={qqLoginSession.qr_image_data_url}
-                            alt={`${getQQLoginModeLabel(qqLoginSession.login_mode)}二维码`}
+                            alt={`${getQQLoginModeLabel(qqLoginSession.login_mode as Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>)}二维码`}
                             className="h-full w-full object-contain"
                           />
                         ) : (
@@ -2230,12 +2501,79 @@ export default function GlobalMusicPlayer() {
                         {(qqLoginSession.status === 'expired' || qqLoginSession.status === 'failed') ? (
                           <button
                             type="button"
-                            onClick={() => void handleOpenQQLogin(qqLoginSession.login_mode)}
+                            onClick={() => void handleOpenQQLogin(qqLoginSession.login_mode as Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>)}
                             disabled={isCreatingLoginSession}
                             className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
                           >
                             {isCreatingLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
                             {qqLoginSession.login_mode === 'qq' ? '重新打开 QQ 登录' : '重新获取二维码'}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {sourceDraft.type === 'netease_music' && neteaseLoginSession ? (
+                  <div className="rounded-[22px] border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-slate-800">网易账号二维码登录</div>
+                        <div className="mt-1 text-xs leading-6 text-slate-500">
+                          {getNeteaseLoginSessionMessage(neteaseLoginSession)}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setNeteaseLoginSession(null)}
+                        className="flex h-8 w-8 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                        aria-label="关闭登录二维码"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                      <div className="flex h-40 w-40 shrink-0 items-center justify-center overflow-hidden rounded-[24px] border border-slate-200 bg-white">
+                        {neteaseLoginSession.qr_image_data_url ? (
+                          <img
+                            src={neteaseLoginSession.qr_image_data_url}
+                            alt="网易账号登录二维码"
+                            className="h-full w-full object-contain"
+                          />
+                        ) : (
+                          <LoaderCircle className="h-6 w-6 animate-spin text-slate-400" />
+                        )}
+                      </div>
+
+                      <div className="flex-1 space-y-2 text-sm text-slate-600">
+                        <div className="rounded-2xl bg-white px-3 py-2">
+                          当前状态：
+                          <span className="ml-1 font-medium text-slate-900">
+                            {neteaseLoginSession.status === 'pending'
+                              ? '等待扫码'
+                              : neteaseLoginSession.status === 'scanned'
+                                ? '等待确认'
+                                : neteaseLoginSession.status === 'authorized'
+                                  ? '已完成授权'
+                                  : neteaseLoginSession.status === 'expired'
+                                    ? '二维码已过期'
+                                    : '登录失败'}
+                          </span>
+                        </div>
+                        <div className="leading-6 text-slate-500">
+                          登录完成后，当前音源的 Cookie 会自动写入，无需手动复制。
+                        </div>
+                        {(neteaseLoginSession.status === 'expired' || neteaseLoginSession.status === 'failed') ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleOpenNeteaseQrLogin()}
+                            disabled={isCreatingNeteaseLoginSession}
+                            className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
+                          >
+                            {isCreatingNeteaseLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            重新获取二维码
                           </button>
                         ) : null}
                       </div>

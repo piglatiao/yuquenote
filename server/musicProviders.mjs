@@ -1,10 +1,18 @@
 import path from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
 
 const QQ_MUSIC_ENDPOINT = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
 const NETEASE_MUSIC_ENDPOINT = 'https://music.163.com';
+const NETEASE_WEAPI_PRESET_KEY = '0CoJUm6Qyw8W8jud';
+const NETEASE_WEAPI_IV = '0102030405060708';
+const NETEASE_WEAPI_PUBLIC_KEY = '010001';
+const NETEASE_WEAPI_MODULUS =
+  '00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7' +
+  'b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312' +
+  'ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe' +
+  '4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7';
 const QQ_MUSIC_DEBUG_DIR = path.join(process.cwd(), 'data', 'debug');
 const QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES = [
   process.env.QQ_MUSIC_BROWSER_PATH,
@@ -177,6 +185,20 @@ async function requestNeteaseJson(url, options = {}) {
   }
 }
 
+async function requestNeteaseWeapi(pathname, payload = {}, options = {}) {
+  const cookie = options.cookie || '';
+  const body = buildNeteaseWeapiBody(payload);
+  return requestNeteaseJson(`${NETEASE_MUSIC_ENDPOINT}/weapi/${pathname}?csrf_token=`, {
+    method: 'POST',
+    cookie,
+    body,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(options.headers || {}),
+    },
+  });
+}
+
 function parseQQInitialDataFromHtml(html) {
   const source = String(html || '');
   const match = source.match(/window\.__INITIAL_DATA__\s*=\s*([\s\S]*?)<\/script>/i);
@@ -297,6 +319,84 @@ function hashNeteasePassword(value) {
   return createHash('md5').update(String(value || ''), 'utf8').digest('hex');
 }
 
+function createNeteaseSecretKey(length = 16) {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const bytes = randomBytes(length);
+  let result = '';
+
+  for (let index = 0; index < length; index += 1) {
+    result += alphabet[bytes[index] % alphabet.length];
+  }
+
+  return result;
+}
+
+function aesEncryptNetease(text, secretKey) {
+  const cipher = createCipheriv(
+    'aes-128-cbc',
+    Buffer.from(String(secretKey), 'utf8'),
+    Buffer.from(NETEASE_WEAPI_IV, 'utf8'),
+  );
+  cipher.setAutoPadding(true);
+  return Buffer.concat([cipher.update(String(text), 'utf8'), cipher.final()]).toString('base64');
+}
+
+function modPowBigInt(base, exponent, modulus) {
+  if (modulus === 1n) {
+    return 0n;
+  }
+
+  let result = 1n;
+  let currentBase = base % modulus;
+  let currentExponent = exponent;
+
+  while (currentExponent > 0n) {
+    if (currentExponent % 2n === 1n) {
+      result = (result * currentBase) % modulus;
+    }
+    currentExponent >>= 1n;
+    currentBase = (currentBase * currentBase) % modulus;
+  }
+
+  return result;
+}
+
+function rsaEncryptNetease(text) {
+  const reversedText = String(text).split('').reverse().join('');
+  const messageHex = Buffer.from(reversedText, 'utf8').toString('hex') || '00';
+  const encrypted = modPowBigInt(
+    BigInt(`0x${messageHex}`),
+    BigInt(`0x${NETEASE_WEAPI_PUBLIC_KEY}`),
+    BigInt(`0x${NETEASE_WEAPI_MODULUS}`),
+  );
+  return encrypted.toString(16).padStart(256, '0');
+}
+
+function buildNeteaseWeapiBody(payload) {
+  const secretKey = createNeteaseSecretKey(16);
+  const text = JSON.stringify(payload ?? {});
+  const params = aesEncryptNetease(aesEncryptNetease(text, NETEASE_WEAPI_PRESET_KEY), secretKey);
+  const encSecKey = rsaEncryptNetease(secretKey);
+  return new URLSearchParams({
+    params,
+    encSecKey,
+  }).toString();
+}
+
+function normalizeNeteasePhoneInput(phone, countryCode = '86') {
+  const normalizedPhone = normalizeString(phone).replace(/\s+/g, '');
+  const normalizedCountryCode = normalizeString(countryCode) || '86';
+
+  if (!normalizedPhone) {
+    throw new Error('Phone is required.');
+  }
+
+  return {
+    phone: normalizedPhone,
+    countryCode: normalizedCountryCode,
+  };
+}
+
 function buildPlaywrightCookiesFromCookieString(cookie = '') {
   const cookies = [];
   const domains = ['.qq.com', '.y.qq.com', 'y.qq.com'];
@@ -397,7 +497,7 @@ function walkQQPayload(node, visit, seen = new Set()) {
 function normalizePlaylistCoverUrl(value) {
   const directUrl = normalizeString(value);
   if (directUrl) {
-    return directUrl;
+    return directUrl.replace(/^http:\/\//i, 'https://');
   }
 
   return null;
@@ -1219,7 +1319,7 @@ function mapNeteaseTrack(song) {
     artist: normalizeSingerNames(artists) || 'Unknown Artist',
     album: normalizeString(album?.name) || 'Unknown Album',
     duration: Number.isFinite(durationMs) ? Math.max(0, Math.floor(durationMs / 1000)) : 0,
-    cover_url: normalizeString(album?.picUrl || album?.blurPicUrl) || null,
+    cover_url: normalizePlaylistCoverUrl(album?.picUrl || album?.blurPicUrl),
   };
 }
 
@@ -1263,9 +1363,8 @@ export async function loginNeteaseMusicByPhone({
   password,
   countryCode = '86',
 }) {
-  const normalizedPhone = normalizeString(phone).replace(/\s+/g, '');
+  const { phone: normalizedPhone, countryCode: normalizedCountryCode } = normalizeNeteasePhoneInput(phone, countryCode);
   const normalizedPassword = String(password || '');
-  const normalizedCountryCode = normalizeString(countryCode) || '86';
 
   if (!normalizedPhone || !normalizedPassword) {
     throw new Error('Phone and password are required.');
@@ -1300,6 +1399,106 @@ export async function loginNeteaseMusicByPhone({
     phone: normalizedPhone,
     country_code: normalizedCountryCode,
     account_name: normalizeString(payload?.profile?.nickname || payload?.account?.userName) || null,
+  };
+}
+
+export async function sendNeteaseMusicPhoneCaptcha({
+  phone,
+  countryCode = '86',
+}) {
+  const { phone: normalizedPhone, countryCode: normalizedCountryCode } = normalizeNeteasePhoneInput(phone, countryCode);
+  const { payload } = await requestNeteaseWeapi('sms/captcha/sent', {
+    cellphone: normalizedPhone,
+    ctcode: normalizedCountryCode,
+  });
+
+  if (!payload || Number(payload.code || 0) !== 200) {
+    throw new Error(payload?.msg || payload?.message || 'Failed to send Netease music captcha.');
+  }
+
+  return {
+    phone: normalizedPhone,
+    country_code: normalizedCountryCode,
+    message: normalizeString(payload?.message || payload?.msg) || '验证码已发送，请注意查收。',
+  };
+}
+
+export async function loginNeteaseMusicByCaptcha({
+  phone,
+  captcha,
+  countryCode = '86',
+}) {
+  const { phone: normalizedPhone, countryCode: normalizedCountryCode } = normalizeNeteasePhoneInput(phone, countryCode);
+  const normalizedCaptcha = normalizeString(captcha).replace(/\s+/g, '');
+
+  if (!normalizedCaptcha) {
+    throw new Error('Captcha is required.');
+  }
+
+  const loginPayload = {
+    phone: normalizedPhone,
+    captcha: normalizedCaptcha,
+    countrycode: normalizedCountryCode,
+    rememberLogin: true,
+  };
+
+  const { payload, setCookieHeaders } = await requestNeteaseWeapi('login/cellphone', loginPayload);
+
+  let cookie = mergeCookieStrings('', setCookieHeaders);
+  if (!cookie && payload?.token) {
+    cookie = mergeCookieStrings('', [`MUSIC_U=${payload.token}`]);
+  }
+
+  if (!payload || Number(payload.code || 0) !== 200) {
+    throw new Error(payload?.msg || payload?.message || 'Netease music captcha login failed.');
+  }
+
+  if (!cookie) {
+    const fallback = await requestNeteaseWeapi('login/cellphone', {
+      ...loginPayload,
+      checkToken: true,
+    }).catch(() => null);
+    cookie = mergeCookieStrings(cookie, fallback?.setCookieHeaders || []);
+  }
+
+  if (!cookie) {
+    throw new Error('Netease music login succeeded but no cookie was returned.');
+  }
+
+  return {
+    cookie,
+    phone: normalizedPhone,
+    country_code: normalizedCountryCode,
+    account_name: normalizeString(payload?.profile?.nickname || payload?.account?.userName) || null,
+  };
+}
+
+export async function verifyNeteaseMusicPhoneCaptcha({
+  phone,
+  captcha,
+  countryCode = '86',
+}) {
+  const { phone: normalizedPhone, countryCode: normalizedCountryCode } = normalizeNeteasePhoneInput(phone, countryCode);
+  const normalizedCaptcha = normalizeString(captcha).replace(/\s+/g, '');
+
+  if (!normalizedCaptcha) {
+    throw new Error('Captcha is required.');
+  }
+
+  const { payload } = await requestNeteaseWeapi('captcha/verify', {
+    cellphone: normalizedPhone,
+    captcha: normalizedCaptcha,
+    ctcode: normalizedCountryCode,
+  });
+
+  if (!payload || Number(payload.code || 0) !== 200) {
+    throw new Error(payload?.msg || payload?.message || 'Netease music captcha verification failed.');
+  }
+
+  return {
+    phone: normalizedPhone,
+    country_code: normalizedCountryCode,
+    message: normalizeString(payload?.message || payload?.msg) || '验证码校验成功。',
   };
 }
 
@@ -1377,6 +1576,252 @@ export async function resolveNeteaseMusicTrack({
   return {
     stream_url: `${NETEASE_MUSIC_ENDPOINT}/song/media/outer/url?id=${encodeURIComponent(normalizedTrackId)}.mp3`,
     quality: '128',
+  };
+}
+
+function chunkItems(items = [], size = 200) {
+  const chunks = [];
+  const normalizedSize = Math.max(1, Math.floor(size));
+
+  for (let index = 0; index < items.length; index += normalizedSize) {
+    chunks.push(items.slice(index, index + normalizedSize));
+  }
+
+  return chunks;
+}
+
+function normalizeNeteasePlaylistSummary(playlist, kind) {
+  if (!playlist || typeof playlist !== 'object') {
+    return null;
+  }
+
+  const id = normalizeString(playlist?.id);
+  const title = normalizeString(playlist?.name) || 'Untitled Playlist';
+  const songCount = Number(playlist?.trackCount ?? playlist?.songCount ?? playlist?.track_number ?? 0);
+
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    title,
+    cover_url: normalizePlaylistCoverUrl(
+      playlist?.coverImgUrl
+      || playlist?.coverUrl
+      || playlist?.picUrl
+      || playlist?.backgroundCoverUrl,
+    ),
+    song_count: Number.isFinite(songCount) ? Math.max(0, Math.floor(songCount)) : 0,
+    kind,
+  };
+}
+
+export async function getNeteaseMusicAccountProfile({
+  cookie = '',
+}) {
+  const normalizedCookie = String(cookie || '').trim();
+  if (!normalizedCookie) {
+    throw new Error('Current Netease Music source does not contain a login cookie.');
+  }
+
+  const { payload } = await requestNeteaseWeapi('w/nuser/account/get', {
+    noCheckToken: true,
+  }, {
+    cookie: normalizedCookie,
+  });
+
+  const profile = payload?.profile ?? null;
+  const account = payload?.account ?? null;
+  const userId = normalizeString(profile?.userId || account?.id);
+  if (!userId || !profile) {
+    throw new Error('Current Netease Music source is not logged in with a valid Netease account.');
+  }
+
+  return {
+    user_id: userId,
+    nickname: normalizeString(profile?.nickname || account?.userName) || null,
+    avatar_url: normalizePlaylistCoverUrl(profile?.avatarUrl || profile?.avatarUrlStr),
+    profile,
+    account,
+  };
+}
+
+async function requestNeteaseUserPlaylists(userId, cookie = '') {
+  const normalizedUserId = normalizeString(userId);
+  if (!normalizedUserId) {
+    return [];
+  }
+
+  const params = new URLSearchParams({
+    uid: normalizedUserId,
+    limit: '1000',
+    offset: '0',
+    includeVideo: 'true',
+  });
+  const { payload } = await requestNeteaseJson(`${NETEASE_MUSIC_ENDPOINT}/api/user/playlist?${params.toString()}`, {
+    cookie,
+  });
+
+  return Array.isArray(payload?.playlist) ? payload.playlist : [];
+}
+
+async function requestNeteasePlaylistDetail(playlistId, trackCount = 1000, cookie = '') {
+  const normalizedPlaylistId = normalizeString(playlistId);
+  if (!normalizedPlaylistId) {
+    return null;
+  }
+
+  const params = new URLSearchParams({
+    id: normalizedPlaylistId,
+    n: String(Math.max(1, Math.min(10000, Number(trackCount) || 1000))),
+    s: '0',
+  });
+  const { payload } = await requestNeteaseJson(`${NETEASE_MUSIC_ENDPOINT}/api/v6/playlist/detail?${params.toString()}`, {
+    cookie,
+  });
+
+  return payload?.playlist ?? null;
+}
+
+async function requestNeteaseSongDetails(trackIds = [], cookie = '') {
+  const normalizedTrackIds = [...new Set(
+    (Array.isArray(trackIds) ? trackIds : [])
+      .map((item) => normalizeString(item))
+      .filter(Boolean),
+  )];
+  if (normalizedTrackIds.length === 0) {
+    return [];
+  }
+
+  const c = JSON.stringify(
+    normalizedTrackIds.map((id) => {
+      const numericId = Number(id);
+      return { id: Number.isFinite(numericId) ? numericId : id };
+    }),
+  );
+  const ids = `[${normalizedTrackIds.map((id) => JSON.stringify(id)).join(',')}]`;
+  const body = new URLSearchParams({ c, ids }).toString();
+  const { payload } = await requestNeteaseJson(`${NETEASE_MUSIC_ENDPOINT}/api/v3/song/detail`, {
+    method: 'POST',
+    cookie,
+    body,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+  });
+
+  return Array.isArray(payload?.songs) ? payload.songs : [];
+}
+
+function mergeNeteaseTracks(primaryTracks = [], secondaryTracks = []) {
+  const mergedTracks = [];
+  const seenTrackIds = new Set();
+
+  for (const item of [...primaryTracks, ...secondaryTracks]) {
+    const mappedTrack = mapNeteaseTrack(item);
+    if (!mappedTrack || seenTrackIds.has(mappedTrack.provider_track_id)) {
+      continue;
+    }
+
+    seenTrackIds.add(mappedTrack.provider_track_id);
+    mergedTracks.push(mappedTrack);
+  }
+
+  return mergedTracks;
+}
+
+async function requestNeteasePlaylistTracks(playlistId, cookie = '') {
+  const playlistDetail = await requestNeteasePlaylistDetail(playlistId, 1000, cookie);
+  if (!playlistDetail) {
+    return [];
+  }
+
+  const trackIds = Array.isArray(playlistDetail?.trackIds)
+    ? playlistDetail.trackIds
+        .map((item) => normalizeString(item?.id || item))
+        .filter(Boolean)
+    : [];
+  const embeddedTracks = Array.isArray(playlistDetail?.tracks) ? playlistDetail.tracks : [];
+  let tracks = mergeNeteaseTracks(embeddedTracks, []);
+
+  if (trackIds.length > tracks.length) {
+    const embeddedTrackIds = new Set(tracks.map((item) => item.provider_track_id));
+    const missingTrackIds = trackIds.filter((id) => !embeddedTrackIds.has(id));
+
+    for (const chunk of chunkItems(missingTrackIds, 200)) {
+      const detailTracks = await requestNeteaseSongDetails(chunk, cookie).catch(() => []);
+      tracks = mergeNeteaseTracks(tracks, detailTracks);
+    }
+  }
+
+  return tracks;
+}
+
+export async function getNeteaseMusicCollectionPlaylistTracks({
+  playlistId,
+  cookie = '',
+}) {
+  const normalizedPlaylistId = normalizeString(playlistId);
+  if (!normalizedPlaylistId) {
+    return [];
+  }
+
+  return requestNeteasePlaylistTracks(normalizedPlaylistId, cookie);
+}
+
+export async function getNeteaseMusicCollections({
+  cookie = '',
+}) {
+  const normalizedCookie = String(cookie || '').trim();
+  const accountProfile = await getNeteaseMusicAccountProfile({
+    cookie: normalizedCookie,
+  });
+  const playlists = await requestNeteaseUserPlaylists(accountProfile.user_id, normalizedCookie);
+
+  const likedPlaylistRaw = playlists.find((playlist) => {
+    const specialType = Number(playlist?.specialType ?? 0);
+    const title = normalizeString(playlist?.name);
+    return specialType === 5 || /我喜欢|喜欢的音乐/.test(title);
+  }) ?? null;
+  const createdPlaylistsRaw = playlists.filter((playlist) => {
+    const playlistUserId = normalizeString(playlist?.creator?.userId || playlist?.userId);
+    const subscribed = Boolean(playlist?.subscribed);
+    return playlistUserId === accountProfile.user_id && !subscribed;
+  });
+  const collectedPlaylistsRaw = playlists.filter((playlist) => {
+    const playlistId = normalizeString(playlist?.id);
+    if (playlistId && playlistId === normalizeString(likedPlaylistRaw?.id)) {
+      return false;
+    }
+
+    const playlistUserId = normalizeString(playlist?.creator?.userId || playlist?.userId);
+    const subscribed = Boolean(playlist?.subscribed);
+    return subscribed || playlistUserId !== accountProfile.user_id;
+  });
+
+  const likedSongsPlaylist = normalizeNeteasePlaylistSummary(likedPlaylistRaw, 'liked_songs');
+  const createdPlaylists = createdPlaylistsRaw
+    .map((playlist) => normalizeNeteasePlaylistSummary(playlist, 'created'))
+    .filter((playlist) => playlist && playlist.id !== likedSongsPlaylist?.id);
+  const collectedPlaylists = collectedPlaylistsRaw
+    .map((playlist) => normalizeNeteasePlaylistSummary(playlist, 'collected'))
+    .filter(Boolean);
+  const likedTracks = likedSongsPlaylist
+    ? await getNeteaseMusicCollectionPlaylistTracks({
+        playlistId: likedSongsPlaylist.id,
+        cookie: normalizedCookie,
+      }).catch(() => [])
+    : [];
+
+  return {
+    uin: accountProfile.user_id,
+    nickname: accountProfile.nickname,
+    avatar_url: accountProfile.avatar_url,
+    liked_songs_playlist: likedSongsPlaylist,
+    liked_tracks: likedTracks,
+    created_playlists: createdPlaylists,
+    collected_playlists: collectedPlaylists,
   };
 }
 

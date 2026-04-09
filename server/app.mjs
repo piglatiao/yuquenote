@@ -68,14 +68,19 @@ import {
   ensureMusicPlayerState,
 } from './db.mjs';
 import {
+  getNeteaseMusicAccountProfile,
+  getNeteaseMusicCollectionPlaylistTracks,
+  getNeteaseMusicCollections,
   getQQMusicCollectionPlaylistTracks,
   getNeteaseMusicLyric,
   getQQMusicCollections,
   getQQMusicLyric,
+  loginNeteaseMusicByCaptcha,
   loginNeteaseMusicByPhone,
   normalizeQQQuality,
   resolveNeteaseMusicTrack,
   resolveQQMusicTrack,
+  sendNeteaseMusicPhoneCaptcha,
   searchNeteaseMusicTracks,
   searchQQMusicTracks,
 } from './musicProviders.mjs';
@@ -103,6 +108,17 @@ const QQ_MUSIC_LOGIN_CONFIG = {
   },
   launchTimeoutMs: 30000,
 };
+const NETEASE_MUSIC_LOGIN_SESSION_TTL_MS = 1000 * 60 * 8;
+const NETEASE_MUSIC_LOGIN_CONFIG = {
+  pageUrl: 'https://music.163.com/login',
+  userAgent:
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+  viewport: {
+    width: 760,
+    height: 860,
+  },
+  launchTimeoutMs: 30000,
+};
 const QQ_MUSIC_QQ_LOGIN_POPUP_SIZE = {
   width: 540,
   height: 760,
@@ -111,6 +127,7 @@ const QQ_MUSIC_QQ_LOGIN_PAGE_URL = 'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?a
 const QQ_MUSIC_LOGIN_DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const QQ_MUSIC_LOGIN_PROFILE_ROOT = path.join(DATA_DIR, 'music-login-profiles');
 const qqMusicLoginSessions = new Map();
+const neteaseMusicLoginSessions = new Map();
 const QQ_MUSIC_AUTH_COOKIE_NAMES = new Set([
   'uin',
   'p_uin',
@@ -124,6 +141,14 @@ const QQ_MUSIC_AUTH_COOKIE_NAMES = new Set([
   'qm_keyst',
   'qqmusic_key',
 ]);
+const NETEASE_MUSIC_AUTH_COOKIE_NAMES = new Set([
+  'MUSIC_U',
+  'MUSIC_A',
+  '__csrf',
+  'NMTID',
+  'MUSIC_R_T',
+  'MUSIC_A_T',
+]);
 const QQ_MUSIC_LOGIN_TRIGGER_SELECTORS = [
   '.top_login__link',
   'a.top_login__link',
@@ -136,6 +161,11 @@ const QQ_MUSIC_WECHAT_QR_SELECTORS = [
   'img.qrcode',
   '.js_qrcode_img',
   '.web_qrcode_img',
+];
+const NETEASE_MUSIC_QR_SELECTORS = [
+  'div._2SF8rF8D canvas',
+  'div._2SF8rF8D img',
+  'canvas',
 ];
 const QQ_MUSIC_QQ_QR_SELECTORS = [
   '#qrlogin_img',
@@ -381,6 +411,23 @@ async function launchQQMusicLoginContext(options = {}) {
     viewport,
     locale: 'zh-CN',
     userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
+  });
+  const page = await context.newPage();
+
+  return {
+    browser,
+    context,
+    page,
+    isPersistentContext: false,
+  };
+}
+
+async function launchNeteaseMusicLoginContext() {
+  const browser = await launchQQMusicLoginBrowser();
+  const context = await browser.newContext({
+    viewport: NETEASE_MUSIC_LOGIN_CONFIG.viewport,
+    locale: 'zh-CN',
+    userAgent: NETEASE_MUSIC_LOGIN_CONFIG.userAgent,
   });
   const page = await context.newPage();
 
@@ -885,6 +932,15 @@ async function captureQQMusicQqQrImageData(page) {
   return captureVisibleQrLocatorData(locator);
 }
 
+async function captureNeteaseMusicQrImageData(page) {
+  const locator = await findVisibleLocatorAcrossScopes(page, NETEASE_MUSIC_QR_SELECTORS, 12000);
+  if (!locator) {
+    return null;
+  }
+
+  return captureVisibleQrLocatorData(locator);
+}
+
 async function isWechatFrameStateVisible(frame, selectors) {
   if (!frame) {
     return false;
@@ -917,6 +973,13 @@ function getQQMusicContextCookies(context) {
   }));
 }
 
+function getNeteaseMusicContextCookies(context) {
+  return context.cookies().then((cookies) => cookies.filter((cookie) => {
+    const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
+    return domain.endsWith('music.163.com') || domain.endsWith('163.com');
+  }));
+}
+
 async function getQQMusicAuthorizedCookieString(context, options = {}) {
   const {
     allowPartial = false,
@@ -937,6 +1000,19 @@ async function getQQMusicAuthorizedCookieString(context, options = {}) {
   }
 
   if (!allowPartial && !hasPlayableCookie && hasAccountCookie) {
+    return '';
+  }
+
+  return serializeBrowserCookies(relevantCookies);
+}
+
+async function getNeteaseMusicAuthorizedCookieString(context) {
+  const relevantCookies = await getNeteaseMusicContextCookies(context);
+  const names = new Set(relevantCookies.map((cookie) => cookie.name));
+  const hasAuthCookie = relevantCookies.some((cookie) => NETEASE_MUSIC_AUTH_COOKIE_NAMES.has(cookie.name));
+  const hasSessionCookie = names.has('MUSIC_U') || names.has('MUSIC_A');
+
+  if (!hasAuthCookie || !hasSessionCookie) {
     return '';
   }
 
@@ -1464,6 +1540,189 @@ async function refreshQQMusicQqLoginSession(session) {
 
   session.status = 'pending';
   session.message = '等待 QQ 扫码。';
+  session.updated_at = now();
+  return session;
+}
+
+function cleanupNeteaseMusicLoginSessions() {
+  const nowValue = Date.now();
+
+  neteaseMusicLoginSessions.forEach((session, sessionId) => {
+    const createdAtValue = new Date(session.created_at).getTime();
+    if (!Number.isFinite(createdAtValue) || nowValue - createdAtValue > NETEASE_MUSIC_LOGIN_SESSION_TTL_MS) {
+      session.status = 'expired';
+      session.message = '二维码已过期，请重新获取。';
+      session.updated_at = now();
+      void closeQQMusicLoginSessionResources(session);
+      neteaseMusicLoginSessions.delete(sessionId);
+    }
+  });
+}
+
+function serializeNeteaseMusicLoginSession(session) {
+  if (!session) {
+    return null;
+  }
+
+  return {
+    id: session.id,
+    provider: 'netease_music',
+    login_mode: 'qr',
+    status: session.status,
+    qr_image_data_url: session.qr_image_data_url ?? null,
+    cookie: session.cookie ?? null,
+    account_name: session.account_name ?? null,
+    message: session.message ?? null,
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+  };
+}
+
+function getNeteaseMusicLoginSessionForUser(sessionId, userId) {
+  cleanupNeteaseMusicLoginSessions();
+  const session = neteaseMusicLoginSessions.get(sessionId) ?? null;
+  if (!session || session.user_id !== userId) {
+    return null;
+  }
+
+  if (Date.now() - new Date(session.created_at).getTime() > NETEASE_MUSIC_LOGIN_SESSION_TTL_MS) {
+    session.status = 'expired';
+    session.message = '二维码已过期，请重新获取。';
+    session.updated_at = now();
+  }
+
+  return session;
+}
+
+async function createNeteaseMusicQrLoginSession(userId) {
+  cleanupNeteaseMusicLoginSessions();
+
+  const { browser, context, page, isPersistentContext } = await launchNeteaseMusicLoginContext();
+
+  try {
+    await page.goto(NETEASE_MUSIC_LOGIN_CONFIG.pageUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: NETEASE_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+    });
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => null);
+    await page.waitForTimeout(1500);
+
+    const qrImageDataUrl = await captureNeteaseMusicQrImageData(page);
+    if (!qrImageDataUrl) {
+      throw new Error('未能生成网易账号登录二维码。');
+    }
+
+    const timestamp = now();
+    const session = {
+      id: newId(),
+      user_id: userId,
+      login_mode: 'qr',
+      status: 'pending',
+      message: '请使用网易云音乐 App 扫码登录。',
+      cookie: null,
+      account_name: null,
+      qr_image_data_url: qrImageDataUrl,
+      created_at: timestamp,
+      updated_at: timestamp,
+      browser,
+      context,
+      page,
+      is_persistent_context: isPersistentContext,
+    };
+
+    neteaseMusicLoginSessions.set(session.id, session);
+    return session;
+  } catch (error) {
+    await closeQQMusicLoginSessionResources({ browser, context, page });
+    throw error;
+  }
+}
+
+async function refreshNeteaseMusicQrLoginSession(session) {
+  if (!session) {
+    throw new Error('登录会话不存在。');
+  }
+
+  if (session.status === 'authorized' || session.status === 'failed' || session.status === 'expired') {
+    return session;
+  }
+
+  if (Date.now() - new Date(session.created_at).getTime() > NETEASE_MUSIC_LOGIN_SESSION_TTL_MS) {
+    session.status = 'expired';
+    session.message = '二维码已过期，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (!session.page || session.page.isClosed()) {
+    session.status = 'failed';
+    session.message = '网易账号登录页已关闭，请重新获取二维码。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  const authorizedCookie = await getNeteaseMusicAuthorizedCookieString(session.context);
+  if (authorizedCookie) {
+    let accountName = null;
+
+    try {
+      const profile = await getNeteaseMusicAccountProfile({
+        cookie: authorizedCookie,
+      });
+      accountName = profile.nickname;
+    } catch {
+      // Ignore profile lookup failures and keep the cookie.
+    }
+
+    session.status = 'authorized';
+    session.cookie = authorizedCookie;
+    session.account_name = accountName;
+    session.message = accountName ? `${accountName} 已完成网易账号登录。` : '网易账号扫码登录成功，可直接保存。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  const pageText = await session.page.locator('body').innerText().catch(() => '');
+  if (/扫描成功/.test(pageText) && /确认登录/.test(pageText)) {
+    session.status = 'scanned';
+    session.message = '已扫码，请在手机上确认登录。';
+    session.updated_at = now();
+    return session;
+  }
+
+  if (/二维码已失效|点击刷新/.test(pageText)) {
+    session.status = 'expired';
+    session.message = '二维码已失效，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (/原设备确认|安全邮箱验证|绑定手机号验证/.test(pageText)) {
+    session.status = 'failed';
+    session.message = '该网易账号需要额外安全验证，请先在官方页完成验证后再试。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (/加载失败/.test(pageText)) {
+    session.status = 'failed';
+    session.message = '网易登录二维码加载失败，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (!session.qr_image_data_url) {
+    session.qr_image_data_url = await captureNeteaseMusicQrImageData(session.page);
+  }
+
+  session.status = 'pending';
+  session.message = '等待网易云音乐 App 扫码。';
   session.updated_at = now();
   return session;
 }
@@ -2010,7 +2269,7 @@ function normalizeMusicSourceConfigInput(value, sourceType = 'qq_music') {
   let loginMode = null;
 
   if (normalizedType === 'netease_music') {
-    loginMode = raw.login_mode === 'phone' ? 'phone' : null;
+    loginMode = raw.login_mode === 'qr' || raw.login_mode === 'phone' ? raw.login_mode : null;
   } else if (raw.login_mode === 'qq' || raw.login_mode === 'wechat') {
     loginMode = raw.login_mode;
   }
@@ -2717,6 +2976,46 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/music/netease/qr-login/sessions') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    try {
+      const session = await createNeteaseMusicQrLoginSession(currentUser.id);
+      json(res, 201, serializeNeteaseMusicLoginSession(session));
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : '网易账号登录初始化失败。' });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && /^\/api\/music\/netease\/qr-login\/sessions\/[^/]+\/status$/.test(url.pathname)) {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const sessionId = decodeURIComponent(
+      url.pathname
+        .replace('/api/music/netease/qr-login/sessions/', '')
+        .replace('/status', ''),
+    );
+    const session = getNeteaseMusicLoginSessionForUser(sessionId, currentUser.id);
+    if (!session) {
+      json(res, 404, { error: '网易账号登录会话不存在。' });
+      return;
+    }
+
+    try {
+      const refreshedSession = await refreshNeteaseMusicQrLoginSession(session);
+      json(res, 200, serializeNeteaseMusicLoginSession(refreshedSession));
+    } catch (error) {
+      session.status = 'failed';
+      session.message = error instanceof Error ? error.message : '网易账号登录失败。';
+      session.updated_at = now();
+      json(res, 200, serializeNeteaseMusicLoginSession(session));
+    }
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/music/netease/login/phone') {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
@@ -2747,6 +3046,71 @@ async function handleApi(req, res, url) {
       });
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : 'Netease music phone login failed.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/netease/captcha/send') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const phone = String(body.phone || '').trim();
+    const countryCode = String(body.country_code || '86').trim() || '86';
+
+    if (!phone) {
+      json(res, 400, { error: 'Phone is required.' });
+      return;
+    }
+
+    try {
+      const result = await sendNeteaseMusicPhoneCaptcha({
+        phone,
+        countryCode,
+      });
+
+      json(res, 200, {
+        provider: 'netease_music',
+        phone: result.phone,
+        country_code: result.country_code,
+        message: result.message,
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Failed to send Netease music captcha.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/netease/login/captcha') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const phone = String(body.phone || '').trim();
+    const captcha = String(body.captcha || '').trim();
+    const countryCode = String(body.country_code || '86').trim() || '86';
+
+    if (!phone || !captcha) {
+      json(res, 400, { error: 'Phone and captcha are required.' });
+      return;
+    }
+
+    try {
+      const result = await loginNeteaseMusicByCaptcha({
+        phone,
+        captcha,
+        countryCode,
+      });
+
+      json(res, 200, {
+        provider: 'netease_music',
+        cookie: result.cookie,
+        phone: result.phone,
+        country_code: result.country_code,
+        account_name: result.account_name,
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Netease music captcha login failed.' });
     }
     return;
   }
@@ -2802,15 +3166,14 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (source.type !== 'qq_music') {
-      json(res, 400, { error: 'Only QQ Music collections are supported right now.' });
-      return;
-    }
-
     try {
-      const collections = await getQQMusicCollections({
-        cookie: source.config?.cookie || '',
-      });
+      const collections = source.type === 'netease_music'
+        ? await getNeteaseMusicCollections({
+            cookie: source.config?.cookie || '',
+          })
+        : await getQQMusicCollections({
+            cookie: source.config?.cookie || '',
+          });
 
       json(res, 200, {
         source,
@@ -2844,20 +3207,22 @@ async function handleApi(req, res, url) {
       return;
     }
 
-    if (source.type !== 'qq_music') {
-      json(res, 400, { error: 'Only QQ Music collections are supported right now.' });
-      return;
-    }
-
     try {
-      const collections = await getQQMusicCollections({
-        cookie: source.config?.cookie || '',
-      });
-      const tracks = await getQQMusicCollectionPlaylistTracks({
-        playlistId,
-        uin: collections.uin,
-        cookie: source.config?.cookie || '',
-      });
+      const tracks = source.type === 'netease_music'
+        ? await getNeteaseMusicCollectionPlaylistTracks({
+            playlistId,
+            cookie: source.config?.cookie || '',
+          })
+        : await (async () => {
+            const collections = await getQQMusicCollections({
+              cookie: source.config?.cookie || '',
+            });
+            return getQQMusicCollectionPlaylistTracks({
+              playlistId,
+              uin: collections.uin,
+              cookie: source.config?.cookie || '',
+            });
+          })();
 
       json(res, 200, {
         source,

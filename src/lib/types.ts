@@ -182,7 +182,7 @@ export interface TeamRecyclePayload {
 
 export type MusicSourceType = 'qq_music' | 'netease_music';
 
-export type MusicSourceLoginMode = 'wechat' | 'qq' | 'phone';
+export type MusicSourceLoginMode = 'wechat' | 'qq' | 'qr' | 'phone';
 
 export interface MusicSourceConfig {
   cookie?: string | null;
@@ -275,11 +275,12 @@ export interface MusicCollectionPlaylistDetailPayload {
 
 export interface MusicLoginSession {
   id: string;
-  provider: 'qq_music';
-  login_mode: 'wechat' | 'qq';
+  provider: 'qq_music' | 'netease_music';
+  login_mode: 'wechat' | 'qq' | 'qr';
   status: 'pending' | 'scanned' | 'authorized' | 'expired' | 'failed';
   qr_image_data_url: string | null;
   cookie: string | null;
+  account_name?: string | null;
   message: string | null;
   created_at: string;
   updated_at: string;
