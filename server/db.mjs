@@ -274,7 +274,7 @@ export function userNotificationRowToModel(row) {
 }
 
 function normalizeMusicSourceType(value) {
-  return value === 'qq_music' ? value : 'qq_music';
+  return value === 'netease_music' ? value : 'qq_music';
 }
 
 function normalizeMusicQuality(value) {
@@ -284,10 +284,21 @@ function normalizeMusicQuality(value) {
 function normalizeMusicSourceConfig(value) {
   const parsed = value && typeof value === 'object' ? value : {};
   const cookie = typeof parsed.cookie === 'string' ? parsed.cookie.trim() : null;
+  const phone = typeof parsed.phone === 'string' ? parsed.phone.trim() : null;
+  const countryCode = typeof parsed.country_code === 'string' ? parsed.country_code.trim() : null;
+  const accountName = typeof parsed.account_name === 'string' ? parsed.account_name.trim() : null;
+  const loginMode =
+    parsed.login_mode === 'qq' || parsed.login_mode === 'wechat' || parsed.login_mode === 'phone'
+      ? parsed.login_mode
+      : null;
 
   return {
     cookie: cookie || null,
     quality: normalizeMusicQuality(parsed.quality),
+    login_mode: loginMode,
+    phone: phone || null,
+    country_code: countryCode || null,
+    account_name: accountName || null,
   };
 }
 

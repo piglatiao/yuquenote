@@ -64,7 +64,18 @@ import {
   ensureDefaultMusicSource,
   ensureMusicPlayerState,
 } from './db.mjs';
-import { getQQMusicCollections, getQQMusicLyric, normalizeQQQuality, resolveQQMusicTrack, searchQQMusicTracks } from './musicProviders.mjs';
+import {
+  getQQMusicCollectionPlaylistTracks,
+  getNeteaseMusicLyric,
+  getQQMusicCollections,
+  getQQMusicLyric,
+  loginNeteaseMusicByPhone,
+  normalizeQQQuality,
+  resolveNeteaseMusicTrack,
+  resolveQQMusicTrack,
+  searchNeteaseMusicTracks,
+  searchQQMusicTracks,
+} from './musicProviders.mjs';
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
 const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
@@ -87,6 +98,9 @@ const QQ_MUSIC_LOGIN_CONFIG = {
   },
   launchTimeoutMs: 30000,
 };
+const QQ_MUSIC_QQ_LOGIN_PAGE_URL = 'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=716027609&daid=383&style=33&login_text=%E7%99%BB%E5%BD%95&hide_title_bar=1&hide_border=1&target=self&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&pt_3rd_aid=100497308&pt_feedback_link=https%3A%2F%2Fsupport.qq.com%2Fproducts%2F77942%3FcustomInfo%3D.appid100497308&theme=2&verify_theme=';
+const QQ_MUSIC_LOGIN_DEBUG_DIR = path.join(DATA_DIR, 'debug');
+const QQ_MUSIC_LOGIN_PROFILE_ROOT = path.join(DATA_DIR, 'music-login-profiles');
 const qqMusicLoginSessions = new Map();
 const QQ_MUSIC_AUTH_COOKIE_NAMES = new Set([
   'uin',
@@ -94,6 +108,9 @@ const QQ_MUSIC_AUTH_COOKIE_NAMES = new Set([
   'wxuin',
   'skey',
   'p_skey',
+  'lskey',
+  'luin',
+  'ptcz',
   'pt4_token',
   'qm_keyst',
   'qqmusic_key',
@@ -110,6 +127,27 @@ const QQ_MUSIC_WECHAT_QR_SELECTORS = [
   'img.qrcode',
   '.js_qrcode_img',
   '.web_qrcode_img',
+];
+const QQ_MUSIC_QQ_QR_SELECTORS = [
+  '#qrlogin_img',
+  'img#qrlogin_img',
+  '.qrlogin_img',
+  '.qrlogin_img img',
+  '#qr_area img',
+  'img[alt*="二维码"]',
+];
+const QQ_MUSIC_QQ_LOGIN_TAB_SELECTORS = [
+  '#switcher_qlogin',
+  'text=QQ登录',
+  'a:has-text("QQ登录")',
+  'button:has-text("QQ登录")',
+  'span:has-text("QQ登录")',
+];
+const QQ_MUSIC_WECHAT_LOGIN_TAB_SELECTORS = [
+  'text=微信登录',
+  'a:has-text("微信登录")',
+  'button:has-text("微信登录")',
+  'span:has-text("微信登录")',
 ];
 const QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES = [
   process.env.QQ_MUSIC_BROWSER_PATH,
@@ -163,8 +201,76 @@ async function launchQQMusicLoginBrowser() {
   );
 }
 
+function resolveQQMusicBrowserExecutablePath() {
+  for (const executablePath of QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES) {
+    if (executablePath && existsSync(executablePath)) {
+      return executablePath;
+    }
+  }
+
+  return undefined;
+}
+
+async function launchQQMusicLoginContext(options = {}) {
+  const {
+    headless = true,
+    persistentProfileKey = null,
+  } = options;
+  const executablePath = resolveQQMusicBrowserExecutablePath();
+
+  if (persistentProfileKey) {
+    const userDataDir = path.join(QQ_MUSIC_LOGIN_PROFILE_ROOT, persistentProfileKey);
+    await mkdir(userDataDir, { recursive: true });
+
+    const context = await chromium.launchPersistentContext(userDataDir, {
+      headless,
+      executablePath,
+      viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
+      locale: 'zh-CN',
+      userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
+      timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+      ignoreDefaultArgs: ['--enable-automation'],
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
+    });
+    const page = context.pages()[0] ?? await context.newPage();
+
+    return {
+      browser: context.browser() ?? null,
+      context,
+      page,
+      isPersistentContext: true,
+    };
+  }
+
+  const browser = await launchQQMusicLoginBrowser();
+  const context = await browser.newContext({
+    viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
+    locale: 'zh-CN',
+    userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
+  });
+  const page = await context.newPage();
+
+  return {
+    browser,
+    context,
+    page,
+    isPersistentContext: false,
+  };
+}
+
 function getQQMusicWechatFrame(page) {
   return page.frames().find((frame) => frame.url().includes('open.weixin.qq.com/connect/qrconnect')) ?? null;
+}
+
+function getQQMusicQqFrame(page) {
+  return page.frames().find((frame) => /ptlogin2\.qq\.com|xui\.ptlogin2\.qq\.com|graph\.qq\.com/i.test(frame.url())) ?? null;
+}
+
+function getQQMusicGraphFrame(page) {
+  return page.frames().find((frame) => /graph\.qq\.com\/oauth2\.0\/show/i.test(frame.url())) ?? null;
 }
 
 async function findVisibleLocatorAcrossScopes(page, selectors, timeoutMs = 15000) {
@@ -271,6 +377,290 @@ async function captureQQMusicWechatQrImageData(page, frame) {
   return null;
 }
 
+async function captureVisibleQrLocatorData(locator) {
+  try {
+    await locator.evaluate(async (element) => {
+      if (!(element instanceof HTMLImageElement)) {
+        return;
+      }
+
+      if (element.complete && element.naturalWidth > 0) {
+        return;
+      }
+
+      await new Promise((resolve) => {
+        const done = () => resolve(null);
+        element.addEventListener('load', done, { once: true });
+        element.addEventListener('error', done, { once: true });
+        setTimeout(done, 5000);
+      });
+    });
+  } catch {
+    // Ignore preload failures and fall back to screenshot.
+  }
+
+  try {
+    const src = await locator.getAttribute('src');
+    if (src) {
+      const page = locator.page();
+      const baseUrl = page?.url?.() || QQ_MUSIC_LOGIN_CONFIG.pageUrl;
+      const qrUrl = new URL(src, baseUrl).toString();
+      const response = await fetch(qrUrl, {
+        headers: {
+          'User-Agent': QQ_MUSIC_LOGIN_CONFIG.userAgent,
+          Referer: baseUrl,
+        },
+      });
+      if (response.ok) {
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (buffer.length > 0) {
+          return `data:${response.headers.get('content-type') || 'image/png'};base64,${buffer.toString('base64')}`;
+        }
+      }
+    }
+  } catch {
+    // Fall back to locator screenshot below.
+  }
+
+  const box = await locator.boundingBox().catch(() => null);
+  if (!box || box.width < 40 || box.height < 40) {
+    return null;
+  }
+
+  const buffer = await locator.screenshot({ type: 'png' }).catch(() => null);
+  return buffer ? `data:image/png;base64,${buffer.toString('base64')}` : null;
+}
+
+async function switchQQMusicLoginMode(page, loginMode) {
+  const selectors = loginMode === 'qq' ? QQ_MUSIC_QQ_LOGIN_TAB_SELECTORS : QQ_MUSIC_WECHAT_LOGIN_TAB_SELECTORS;
+  const trigger = await findVisibleLocatorAcrossScopes(page, selectors, 5000);
+  if (!trigger) {
+    return false;
+  }
+
+  try {
+    await trigger.click();
+    await page.waitForTimeout(1000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function finalizeQQMusicOauthConsent(page) {
+  const graphFrame = getQQMusicGraphFrame(page);
+  const directSelectors = [
+    '#authorizeButton',
+    '#allow',
+    '#login_button',
+    '#btnAuthorize',
+    '#btn_allow',
+    'input[name="authorize"]',
+    'input[type="submit"]',
+    'button[type="submit"]',
+    '.btn_allow',
+    '.authorize_btn',
+    '.btn.btn-primary',
+    '.btn.btn_ok',
+  ];
+
+  if (graphFrame) {
+    for (const selector of directSelectors) {
+      try {
+        const locator = graphFrame.locator(selector).first();
+        if (await locator.count() > 0 && await locator.isVisible()) {
+          await locator.click();
+          await page.waitForTimeout(1200);
+          return true;
+        }
+      } catch {
+        // Try the next selector.
+      }
+    }
+
+    try {
+      const buttons = graphFrame.locator('button, input[type="submit"], a[role="button"]');
+      const count = await buttons.count();
+      for (let index = 0; index < count; index += 1) {
+        const locator = buttons.nth(index);
+        if (await locator.isVisible().catch(() => false)) {
+          await locator.click().catch(() => null);
+          await page.waitForTimeout(1200);
+          return true;
+        }
+      }
+    } catch {
+      // Fall back to generic text-based selectors below.
+    }
+
+    try {
+      const submitted = await graphFrame.evaluate(() => {
+        const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"], input[type="radio"]'));
+        for (const input of checkboxes) {
+          if (input instanceof HTMLInputElement && !input.checked && !input.disabled) {
+            input.checked = true;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+
+        const directCandidates = Array.from(document.querySelectorAll([
+          '#authorizeButton',
+          '#allow',
+          '#login_button',
+          '#btnAuthorize',
+          '#btn_allow',
+          'input[name="authorize"]',
+          'input[type="submit"]',
+          'button[type="submit"]',
+          '.btn_allow',
+          '.authorize_btn',
+          '.btn.btn-primary',
+          '.btn.btn_ok',
+          '[data-action*="authorize"]',
+          '[class*="authorize"]',
+          '[id*="authorize"]',
+          '[class*="allow"]',
+          '[id*="allow"]',
+        ].join(',')));
+
+        for (const element of directCandidates) {
+          if (!(element instanceof HTMLElement) || element.hasAttribute('disabled')) {
+            continue;
+          }
+          element.click();
+          return true;
+        }
+
+        const forms = Array.from(document.forms);
+        for (const form of forms) {
+          try {
+            if (typeof form.requestSubmit === 'function') {
+              form.requestSubmit();
+            } else {
+              form.submit();
+            }
+            return true;
+          } catch {
+            // Try the next form.
+          }
+        }
+
+        return false;
+      });
+
+      if (submitted) {
+        await page.waitForTimeout(1500);
+        return true;
+      }
+    } catch {
+      // Fall back to generic text-based selectors below.
+    }
+  }
+
+  const consentSelectors = [
+    'button:has-text("授权并登录")',
+    'a:has-text("授权并登录")',
+    'button:has-text("同意")',
+    'a:has-text("同意")',
+    'button:has-text("确认授权")',
+    'a:has-text("确认授权")',
+    'button:has-text("登录")',
+    'a:has-text("登录")',
+    'button:has-text("确定")',
+    'a:has-text("确定")',
+  ];
+
+  const trigger = await findVisibleLocatorAcrossScopes(page, consentSelectors, 1500);
+  if (!trigger) {
+    return false;
+  }
+
+  try {
+    await trigger.click();
+    await page.waitForTimeout(1200);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function finalizeQQMusicQuickLogin(page) {
+  const qqFrame = getQQMusicQqFrame(page);
+  if (!qqFrame) {
+    return false;
+  }
+
+  const quickLoginSelectors = [
+    '#qlogin_list a',
+    '#qlogin_list .face',
+    '#qlogin_list .uin',
+    '#qlogin_list .nick',
+    '.face',
+    '.uin',
+    '.nick',
+    '[data-uin]',
+    'a[title]',
+  ];
+
+  for (const selector of quickLoginSelectors) {
+    try {
+      const locator = qqFrame.locator(selector).first();
+      if (await locator.count() > 0 && await locator.isVisible().catch(() => false)) {
+        await locator.click().catch(() => null);
+        await page.waitForTimeout(1200);
+        return true;
+      }
+    } catch {
+      // Try next selector.
+    }
+  }
+
+  try {
+    const clicked = await qqFrame.evaluate(() => {
+      const selectors = ['#qlogin_list a', '#qlogin_list .face', '#qlogin_list .uin', '#qlogin_list .nick', '.face', '.uin', '.nick', '[data-uin]'];
+      for (const selector of selectors) {
+        const element = document.querySelector(selector);
+        if (element instanceof HTMLElement) {
+          element.click();
+          return true;
+        }
+      }
+
+      const textCandidates = Array.from(document.querySelectorAll('a, div, span, button'));
+      for (const element of textCandidates) {
+        if (!(element instanceof HTMLElement)) {
+          continue;
+        }
+        const text = (element.innerText || '').trim();
+        if (text && !/密码登录|注册账号|意见反馈/.test(text)) {
+          element.click();
+          return true;
+        }
+      }
+
+      return false;
+    });
+
+    if (clicked) {
+      await page.waitForTimeout(1200);
+      return true;
+    }
+  } catch {
+    // Ignore quick-login click failure.
+  }
+
+  return false;
+}
+
+async function captureQQMusicQqQrImageData(page) {
+  const locator = await findVisibleLocatorAcrossScopes(page, QQ_MUSIC_QQ_QR_SELECTORS, 12000);
+  if (!locator) {
+    return null;
+  }
+
+  return captureVisibleQrLocatorData(locator);
+}
+
 async function isWechatFrameStateVisible(frame, selectors) {
   if (!frame) {
     return false;
@@ -296,19 +686,119 @@ function serializeBrowserCookies(cookies) {
     .join('; ');
 }
 
-async function getQQMusicAuthorizedCookieString(context) {
-  const cookies = await context.cookies();
-  const relevantCookies = cookies.filter((cookie) => {
+function getQQMusicContextCookies(context) {
+  return context.cookies().then((cookies) => cookies.filter((cookie) => {
     const domain = String(cookie.domain || '').replace(/^\./, '').toLowerCase();
     return domain.endsWith('qq.com') || domain.endsWith('y.qq.com');
-  });
+  }));
+}
 
+async function getQQMusicAuthorizedCookieString(context, options = {}) {
+  const {
+    allowPartial = false,
+  } = options;
+  const relevantCookies = await getQQMusicContextCookies(context);
+
+  const names = new Set(relevantCookies.map((cookie) => cookie.name));
   const hasAuthCookie = relevantCookies.some((cookie) => QQ_MUSIC_AUTH_COOKIE_NAMES.has(cookie.name));
+  const hasPlayableCookie = names.has('qqmusic_key') || names.has('qm_keyst');
+  const hasAccountCookie = names.has('uin') || names.has('p_uin') || names.has('wxuin') || names.has('luin');
+
   if (!hasAuthCookie) {
     return '';
   }
 
+  if (!allowPartial && !hasPlayableCookie && !hasAccountCookie) {
+    return '';
+  }
+
+  if (!allowPartial && !hasPlayableCookie && hasAccountCookie) {
+    return '';
+  }
+
   return serializeBrowserCookies(relevantCookies);
+}
+
+async function hydrateQQMusicLoginState(session) {
+  if (!session?.page || session.page.isClosed()) {
+    return '';
+  }
+
+  try {
+    await session.page.goto(QQ_MUSIC_LOGIN_CONFIG.pageUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 10000,
+    });
+    await session.page.waitForTimeout(1200);
+  } catch {
+    // Ignore navigation failures and fall back to current cookie state.
+  }
+
+  return getQQMusicAuthorizedCookieString(session.context, { allowPartial: true });
+}
+
+async function writeQQMusicLoginDebugSnapshot(name, payload) {
+  try {
+    await mkdir(QQ_MUSIC_LOGIN_DEBUG_DIR, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const serialized = JSON.stringify(payload, null, 2);
+    await writeFile(path.join(QQ_MUSIC_LOGIN_DEBUG_DIR, `${name}-${timestamp}.json`), serialized, 'utf8');
+    await writeFile(path.join(QQ_MUSIC_LOGIN_DEBUG_DIR, `${name}-latest.json`), serialized, 'utf8');
+  } catch {
+    // Ignore debug snapshot failures.
+  }
+}
+
+async function collectQQMusicLoginDebugState(session, extra = {}) {
+  if (!session?.context || !session?.page || session.page.isClosed()) {
+    return {
+      login_mode: session?.login_mode ?? null,
+      page_closed: true,
+      ...extra,
+    };
+  }
+
+  const cookies = await getQQMusicContextCookies(session.context).catch(() => []);
+  const pageText = await session.page.locator('body').innerText().catch(() => '');
+  const frameSummaries = await Promise.all(
+    session.page.frames().map(async (frame) => {
+      const buttons = [];
+      try {
+        const buttonLocators = frame.locator('button, input[type="submit"], a[role="button"], a, input[type="button"]');
+        const count = Math.min(await buttonLocators.count(), 12);
+        for (let index = 0; index < count; index += 1) {
+          const locator = buttonLocators.nth(index);
+          const text = await locator.innerText().catch(async () => locator.getAttribute('value').catch(() => ''));
+          const visible = await locator.isVisible().catch(() => false);
+          if (text || visible) {
+            buttons.push({
+              text: String(text || '').trim().slice(0, 120),
+              visible,
+            });
+          }
+        }
+      } catch {
+        // Ignore button introspection failures.
+      }
+
+      return {
+        url: frame.url(),
+        text: (await frame.locator('body').innerText().catch(() => '')).slice(0, 500),
+        buttons,
+      };
+    }),
+  ).catch(() => []);
+
+  return {
+    login_mode: session.login_mode,
+    status: session.status,
+    page_url: session.page.url(),
+    cookie_names: cookies.map((cookie) => cookie.name),
+    cookie_count: cookies.length,
+    page_text: String(pageText || '').slice(0, 1000),
+    frames: frameSummaries,
+    ...extra,
+  };
 }
 
 async function closeQQMusicLoginSessionResources(session) {
@@ -316,10 +806,19 @@ async function closeQQMusicLoginSessionResources(session) {
     return;
   }
 
+  const context = session.context ?? null;
   const browser = session.browser ?? null;
   session.browser = null;
   session.context = null;
   session.page = null;
+
+  if (context) {
+    try {
+      await context.close();
+    } catch {
+      // Ignore context cleanup failures.
+    }
+  }
 
   if (browser) {
     try {
@@ -353,7 +852,7 @@ function serializeQQMusicLoginSession(session) {
   return {
     id: session.id,
     provider: 'qq_music',
-    login_mode: 'wechat',
+    login_mode: session.login_mode === 'qq' ? 'qq' : 'wechat',
     status: session.status,
     qr_image_data_url: session.qr_image_data_url ?? null,
     cookie: session.cookie ?? null,
@@ -405,13 +904,9 @@ async function followQQMusicLoginRedirects(startUrl, cookieJar) {
 async function createQQMusicWechatLoginSession(userId) {
   cleanupQQMusicLoginSessions();
 
-  const browser = await launchQQMusicLoginBrowser();
-  const context = await browser.newContext({
-    viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
-    locale: 'zh-CN',
-    userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
+  const { browser, context, page, isPersistentContext } = await launchQQMusicLoginContext({
+    headless: true,
   });
-  const page = await context.newPage();
 
   try {
     await page.goto(QQ_MUSIC_LOGIN_CONFIG.pageUrl, {
@@ -439,6 +934,7 @@ async function createQQMusicWechatLoginSession(userId) {
     const session = {
       id: newId(),
       user_id: userId,
+      login_mode: 'wechat',
       status: 'pending',
       message: '请使用微信扫码登录。',
       cookie: null,
@@ -448,6 +944,51 @@ async function createQQMusicWechatLoginSession(userId) {
       browser,
       context,
       page,
+      is_persistent_context: isPersistentContext,
+    };
+
+    qqMusicLoginSessions.set(session.id, session);
+    return session;
+  } catch (error) {
+    await closeQQMusicLoginSessionResources({ browser, context, page });
+    throw error;
+  }
+}
+
+async function createQQMusicQqLoginSession(userId) {
+  cleanupQQMusicLoginSessions();
+
+  const { browser, context, page, isPersistentContext } = await launchQQMusicLoginContext({
+    headless: false,
+    persistentProfileKey: `qq-music-qq-${userId}`,
+  });
+
+  try {
+    await page.goto(QQ_MUSIC_QQ_LOGIN_PAGE_URL, {
+      waitUntil: 'domcontentloaded',
+      timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
+    });
+    await page.waitForTimeout(1200);
+    const qrImageDataUrl = await captureQQMusicQqQrImageData(page);
+    if (!qrImageDataUrl) {
+      throw new Error('未能捕获 QQ 扫码登录二维码。');
+    }
+
+    const timestamp = now();
+    const session = {
+      id: newId(),
+      user_id: userId,
+      login_mode: 'qq',
+      status: 'pending',
+      message: '请使用 QQ 扫码登录。',
+      cookie: null,
+      qr_image_data_url: qrImageDataUrl,
+      created_at: timestamp,
+      updated_at: timestamp,
+      browser,
+      context,
+      page,
+      is_persistent_context: isPersistentContext,
     };
 
     qqMusicLoginSessions.set(session.id, session);
@@ -495,6 +1036,16 @@ async function refreshQQMusicWechatLoginSession(session) {
 
   const wechatFrame = getQQMusicWechatFrame(session.page);
   if (!wechatFrame) {
+    const hydratedCookie = await hydrateQQMusicLoginState(session);
+    if (hydratedCookie) {
+      session.status = 'authorized';
+      session.cookie = hydratedCookie;
+      session.message = '微信登录成功，可直接保存。';
+      session.updated_at = now();
+      await closeQQMusicLoginSessionResources(session);
+      return session;
+    }
+
     session.status = 'pending';
     session.message = '正在等待登录状态回跳。';
     session.updated_at = now();
@@ -530,6 +1081,147 @@ async function refreshQQMusicWechatLoginSession(session) {
 
   session.status = 'pending';
   session.message = '等待微信扫码。';
+  session.updated_at = now();
+  return session;
+}
+
+async function refreshQQMusicQqLoginSession(session) {
+  if (!session) {
+    throw new Error('登录会话不存在。');
+  }
+
+  if (session.status === 'authorized' || session.status === 'failed' || session.status === 'expired') {
+    return session;
+  }
+
+  if (Date.now() - new Date(session.created_at).getTime() > QQ_MUSIC_LOGIN_SESSION_TTL_MS) {
+    session.status = 'expired';
+    session.message = '二维码已过期，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (!session.page || session.page.isClosed()) {
+    session.status = 'failed';
+    session.message = '登录窗口已关闭，请重新获取二维码。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  await finalizeQQMusicQuickLogin(session.page);
+  await finalizeQQMusicOauthConsent(session.page);
+
+  const authorizedCookie = await getQQMusicAuthorizedCookieString(session.context, { allowPartial: true });
+  if (authorizedCookie) {
+    session.status = 'authorized';
+    session.cookie = authorizedCookie;
+    session.message = 'QQ 扫码登录成功，可直接保存。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  const qqFrame = getQQMusicQqFrame(session.page);
+  const scannedSelectors = [
+    'text=请在QQ中确认登录',
+    'text=扫码成功',
+    'text=请在手机上确认',
+    'text=请在手机上点击确认',
+    'text=请在QQ手机版上确认',
+  ];
+  const expiredSelectors = ['text=二维码已失效', 'text=点击刷新', 'text=刷新二维码'];
+  const successSelectors = ['text=登录成功', 'text=欢迎登录', 'text=正在登录', 'text=返回QQ音乐'];
+  const scannedAtValue = Number(session.scanned_at_value || 0);
+  const shouldHydrateAfterScan = scannedAtValue > 0 && Date.now() - scannedAtValue >= 1500;
+
+  if (qqFrame && await isWechatFrameStateVisible(qqFrame, scannedSelectors)) {
+    if (!scannedAtValue) {
+      session.scanned_at_value = Date.now();
+    }
+
+    if (shouldHydrateAfterScan) {
+      await finalizeQQMusicOauthConsent(session.page);
+      const hydratedCookie = await hydrateQQMusicLoginState(session);
+      if (hydratedCookie) {
+        session.status = 'authorized';
+        session.cookie = hydratedCookie;
+        session.message = 'QQ 扫码登录成功，可直接保存。';
+        session.updated_at = now();
+        await closeQQMusicLoginSessionResources(session);
+        return session;
+      }
+    }
+
+    session.status = 'scanned';
+    session.message = '已扫码，请在 QQ 中确认登录。';
+    session.updated_at = now();
+    await writeQQMusicLoginDebugSnapshot('qq-music-qq-login', await collectQQMusicLoginDebugState(session, {
+      phase: 'scanned_waiting_confirm',
+      scanned_at_value: session.scanned_at_value,
+    }));
+    return session;
+  }
+
+  if (qqFrame && await isWechatFrameStateVisible(qqFrame, expiredSelectors)) {
+    session.status = 'expired';
+    session.message = '二维码已失效，请重新获取。';
+    session.updated_at = now();
+    await closeQQMusicLoginSessionResources(session);
+    return session;
+  }
+
+  if (qqFrame && await isWechatFrameStateVisible(qqFrame, successSelectors)) {
+    await finalizeQQMusicOauthConsent(session.page);
+    const hydratedCookie = await hydrateQQMusicLoginState(session);
+    if (hydratedCookie) {
+      session.status = 'authorized';
+      session.cookie = hydratedCookie;
+      session.message = 'QQ 扫码登录成功，可直接保存。';
+      session.updated_at = now();
+      await closeQQMusicLoginSessionResources(session);
+      return session;
+    }
+  }
+
+  if (!session.qr_image_data_url) {
+    session.qr_image_data_url = await captureQQMusicQqQrImageData(session.page);
+  }
+
+  if (!qqFrame) {
+    await finalizeQQMusicOauthConsent(session.page);
+    const hydratedCookie = await hydrateQQMusicLoginState(session);
+    if (hydratedCookie) {
+      session.status = 'authorized';
+      session.cookie = hydratedCookie;
+      session.message = 'QQ 扫码登录成功，可直接保存。';
+      session.updated_at = now();
+      await closeQQMusicLoginSessionResources(session);
+      return session;
+    }
+  }
+
+  if (session.status === 'scanned' && shouldHydrateAfterScan) {
+    await finalizeQQMusicOauthConsent(session.page);
+    const hydratedCookie = await hydrateQQMusicLoginState(session);
+    if (hydratedCookie) {
+      session.status = 'authorized';
+      session.cookie = hydratedCookie;
+      session.message = 'QQ 扫码登录成功，可直接保存。';
+      session.updated_at = now();
+      await closeQQMusicLoginSessionResources(session);
+      return session;
+    }
+  }
+
+  await writeQQMusicLoginDebugSnapshot('qq-music-qq-login', await collectQQMusicLoginDebugState(session, {
+    phase: qqFrame ? 'pending_with_frame' : 'pending_without_frame',
+    scanned_at_value: session.scanned_at_value ?? null,
+  }));
+
+  session.status = 'pending';
+  session.message = '等待 QQ 扫码。';
   session.updated_at = now();
   return session;
 }
@@ -1054,17 +1746,40 @@ function normalizeMusicText(value, fallback, maxLength = 160) {
   return (text || fallback).slice(0, maxLength);
 }
 
-function normalizeMusicSourceName(value, fallback = 'QQ音乐') {
+function getMusicSourceType(value) {
+  return value === 'netease_music' ? 'netease_music' : 'qq_music';
+}
+
+function getDefaultMusicSourceName(sourceType = 'qq_music') {
+  return sourceType === 'netease_music' ? '网易云音乐' : 'QQ音乐';
+}
+
+function normalizeMusicSourceName(value, fallback = getDefaultMusicSourceName('qq_music')) {
   return normalizeMusicText(value, fallback, 60);
 }
 
-function normalizeMusicSourceConfigInput(value) {
+function normalizeMusicSourceConfigInput(value, sourceType = 'qq_music') {
   const raw = value && typeof value === 'object' ? value : {};
   const cookie = typeof raw.cookie === 'string' ? raw.cookie.trim() : '';
+  const phone = typeof raw.phone === 'string' ? raw.phone.trim() : '';
+  const countryCode = typeof raw.country_code === 'string' ? raw.country_code.trim() : '';
+  const accountName = typeof raw.account_name === 'string' ? raw.account_name.trim() : '';
+  const normalizedType = getMusicSourceType(sourceType);
+  let loginMode = null;
+
+  if (normalizedType === 'netease_music') {
+    loginMode = raw.login_mode === 'phone' ? 'phone' : null;
+  } else if (raw.login_mode === 'qq' || raw.login_mode === 'wechat') {
+    loginMode = raw.login_mode;
+  }
 
   return {
     cookie: cookie || null,
     quality: normalizeQQQuality(raw.quality),
+    login_mode: loginMode,
+    phone: normalizedType === 'netease_music' ? (phone || null) : null,
+    country_code: normalizedType === 'netease_music' ? ((countryCode || '86') || null) : null,
+    account_name: normalizedType === 'netease_music' ? (accountName || null) : null,
   };
 }
 
@@ -1179,6 +1894,19 @@ async function searchTracksByMusicSource(source, keyword, page, limit) {
       .filter(Boolean);
   }
 
+  if (source.type === 'netease_music') {
+    const tracks = await searchNeteaseMusicTracks({
+      keyword,
+      page,
+      limit,
+      cookie: source.config?.cookie || '',
+    });
+
+    return tracks
+      .map((track) => normalizeMusicTrackPayload(track, source))
+      .filter(Boolean);
+  }
+
   return [];
 }
 
@@ -1192,6 +1920,12 @@ async function resolveTrackByMusicSource(source, providerTrackId) {
       songmid: providerTrackId,
       quality: source.config?.quality,
       cookie: source.config?.cookie || '',
+    });
+  }
+
+  if (source.type === 'netease_music') {
+    return resolveNeteaseMusicTrack({
+      trackId: providerTrackId,
     });
   }
 
@@ -1575,16 +2309,12 @@ async function handleApi(req, res, url) {
     if (!currentUser) return;
 
     const body = await readJsonBody(req);
-    const sourceType = body.type && body.type !== 'qq_music' ? String(body.type) : 'qq_music';
-    if (sourceType !== 'qq_music') {
-      json(res, 400, { error: 'Only QQ音乐 is supported right now.' });
-      return;
-    }
+    const sourceType = getMusicSourceType(body.type);
 
     const timestamp = now();
     const id = newId();
-    const name = normalizeMusicSourceName(body.name, 'QQ音乐');
-    const config = normalizeMusicSourceConfigInput(body.config);
+    const name = normalizeMusicSourceName(body.name, getDefaultMusicSourceName(sourceType));
+    const config = normalizeMusicSourceConfigInput(body.config, sourceType);
     const shouldSetDefault = Boolean(body.is_default);
     const isEnabled = shouldSetDefault ? true : body.is_enabled !== undefined ? Boolean(body.is_enabled) : true;
 
@@ -1626,6 +2356,11 @@ async function handleApi(req, res, url) {
     }
 
     const body = await readJsonBody(req);
+    if (body.type !== undefined && getMusicSourceType(body.type) !== existing.type) {
+      json(res, 400, { error: 'Music source type cannot be changed after creation.' });
+      return;
+    }
+
     const userSources = listMusicSourcesForUser(currentUser.id);
     const enabledSources = userSources.filter((source) => source.is_enabled);
     const mergedConfig =
@@ -1654,7 +2389,7 @@ async function handleApi(req, res, url) {
       WHERE id = ? AND user_id = ?
     `).run(
       nextName,
-      JSON.stringify(normalizeMusicSourceConfigInput(mergedConfig)),
+      JSON.stringify(normalizeMusicSourceConfigInput(mergedConfig, existing.type)),
       Number(nextIsEnabled),
       Number(nextIsDefault),
       now(),
@@ -1699,7 +2434,11 @@ async function handleApi(req, res, url) {
     if (!currentUser) return;
 
     try {
-      const session = await createQQMusicWechatLoginSession(currentUser.id);
+      const body = await readJsonBody(req);
+      const loginMode = body?.login_mode === 'qq' ? 'qq' : 'wechat';
+      const session = loginMode === 'qq'
+        ? await createQQMusicQqLoginSession(currentUser.id)
+        : await createQQMusicWechatLoginSession(currentUser.id);
       json(res, 201, serializeQQMusicLoginSession(session));
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : '音乐登录初始化失败。' });
@@ -1723,13 +2462,49 @@ async function handleApi(req, res, url) {
     }
 
     try {
-      const refreshedSession = await refreshQQMusicWechatLoginSession(session);
+      const refreshedSession = session.login_mode === 'qq'
+        ? await refreshQQMusicQqLoginSession(session)
+        : await refreshQQMusicWechatLoginSession(session);
       json(res, 200, serializeQQMusicLoginSession(refreshedSession));
     } catch (error) {
       session.status = 'failed';
       session.message = error instanceof Error ? error.message : '音乐登录失败。';
       session.updated_at = now();
       json(res, 200, serializeQQMusicLoginSession(session));
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/music/netease/login/phone') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const body = await readJsonBody(req);
+    const phone = String(body.phone || '').trim();
+    const password = String(body.password || '');
+    const countryCode = String(body.country_code || '86').trim() || '86';
+
+    if (!phone || !password) {
+      json(res, 400, { error: 'Phone and password are required.' });
+      return;
+    }
+
+    try {
+      const result = await loginNeteaseMusicByPhone({
+        phone,
+        password,
+        countryCode,
+      });
+
+      json(res, 200, {
+        provider: 'netease_music',
+        cookie: result.cookie,
+        phone: result.phone,
+        country_code: result.country_code,
+        account_name: result.account_name,
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Netease music phone login failed.' });
     }
     return;
   }
@@ -1805,6 +2580,60 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/music/collections/playlist') {
+    const currentUser = requireAuth(req, res);
+    if (!currentUser) return;
+
+    const requestedSourceId = sanitizeNullable(url.searchParams.get('sourceId'));
+    const playlistId = sanitizeNullable(url.searchParams.get('playlistId'));
+    const playlistTitle = String(url.searchParams.get('playlistTitle') || '').trim() || '未命名歌单';
+    const playlistKindRaw = String(url.searchParams.get('playlistKind') || '').trim();
+    const playlistKind = playlistKindRaw === 'liked_songs' || playlistKindRaw === 'collected' ? playlistKindRaw : 'created';
+    const playlistCoverUrl = sanitizeNullable(url.searchParams.get('playlistCoverUrl'));
+
+    if (!requestedSourceId || !playlistId) {
+      json(res, 400, { error: 'Source id and playlist id are required.' });
+      return;
+    }
+
+    const source = getMusicSourceById(requestedSourceId, currentUser.id);
+    if (!source) {
+      json(res, 404, { error: 'Music source not found.' });
+      return;
+    }
+
+    if (source.type !== 'qq_music') {
+      json(res, 400, { error: 'Only QQ Music collections are supported right now.' });
+      return;
+    }
+
+    try {
+      const collections = await getQQMusicCollections({
+        cookie: source.config?.cookie || '',
+      });
+      const tracks = await getQQMusicCollectionPlaylistTracks({
+        playlistId,
+        uin: collections.uin,
+        cookie: source.config?.cookie || '',
+      });
+
+      json(res, 200, {
+        source,
+        playlist: {
+          id: playlistId,
+          title: playlistTitle,
+          cover_url: playlistCoverUrl,
+          song_count: tracks.length,
+          kind: playlistKind,
+        },
+        tracks: tracks.map((track) => normalizeMusicTrackPayload(track, source)).filter(Boolean),
+      });
+    } catch (error) {
+      json(res, 502, { error: error instanceof Error ? error.message : 'Failed to fetch playlist tracks.' });
+    }
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/music/resolve') {
     const currentUser = requireAuth(req, res);
     if (!currentUser) return;
@@ -1838,7 +2667,12 @@ async function handleApi(req, res, url) {
               songmid: providerTrackId,
               cookie: source.config?.cookie || '',
             }).catch(() => [])
-          : Promise.resolve([]),
+          : source.type === 'netease_music'
+            ? getNeteaseMusicLyric({
+                trackId: providerTrackId,
+                cookie: source.config?.cookie || '',
+              }).catch(() => [])
+            : Promise.resolve([]),
       ]);
       const normalizedTrack = normalizeMusicTrackPayload(
         {

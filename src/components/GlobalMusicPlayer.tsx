@@ -23,6 +23,7 @@ import { authService } from '../lib/authApi';
 import { musicService } from '../lib/databaseApi';
 import { notify } from '../lib/notify';
 import type {
+  MusicCollectionPlaylistSummary,
   MusicCollectionsPayload,
   MusicLoginSession,
   MusicPlayerState,
@@ -133,6 +134,10 @@ export default function GlobalMusicPlayer() {
   const [collectionsSourceId, setCollectionsSourceId] = useState<string | null>(null);
   const [isLoadingCollections, setIsLoadingCollections] = useState(false);
   const [collectionsError, setCollectionsError] = useState('');
+  const [selectedCollectionPlaylist, setSelectedCollectionPlaylist] = useState<MusicCollectionPlaylistSummary | null>(null);
+  const [selectedCollectionTracks, setSelectedCollectionTracks] = useState<MusicTrack[]>([]);
+  const [isLoadingCollectionPlaylist, setIsLoadingCollectionPlaylist] = useState(false);
+  const [collectionPlaylistError, setCollectionPlaylistError] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [busyTrackId, setBusyTrackId] = useState<string | null>(null);
   const [showSourceForm, setShowSourceForm] = useState(false);
@@ -165,6 +170,17 @@ export default function GlobalMusicPlayer() {
 
   const currentTrack = useMemo(() => queue[currentIndex] ?? null, [queue, currentIndex]);
   const enabledSources = useMemo(() => sources.filter((source) => source.is_enabled), [sources]);
+  const collectionPlaylists = useMemo(() => {
+    if (!collections) {
+      return [];
+    }
+
+    return [
+      ...(collections.liked_songs_playlist ? [collections.liked_songs_playlist] : []),
+      ...collections.created_playlists,
+      ...collections.collected_playlists,
+    ];
+  }, [collections]);
   const activeSource = useMemo(() => {
     return (
       enabledSources.find((source) => source.id === activeSourceId) ??
@@ -508,16 +524,16 @@ export default function GlobalMusicPlayer() {
   }, [schedulePersist, startPlayback]);
 
   const handlePlayCollectionTrack = useCallback(async (trackIndex: number) => {
-    if (!collections?.liked_tracks.length) {
+    if (!selectedCollectionTracks.length) {
       return;
     }
 
     setActiveView('queue');
     await startPlayback(trackIndex, {
-      queue: collections.liked_tracks,
+      queue: selectedCollectionTracks,
       startTime: 0,
     });
-  }, [collections, startPlayback]);
+  }, [selectedCollectionTracks, startPlayback]);
 
   const handleClearQueue = useCallback(() => {
     const audio = audioRef.current;
@@ -539,6 +555,38 @@ export default function GlobalMusicPlayer() {
     });
   }, [persistPlayerState, replaceQueue]);
 
+  const handleBackToCollectionOverview = useCallback(() => {
+    setSelectedCollectionPlaylist(null);
+    setSelectedCollectionTracks([]);
+    setCollectionPlaylistError('');
+  }, []);
+
+  const handleOpenCollectionPlaylist = useCallback(async (playlist: MusicCollectionPlaylistSummary) => {
+    if (!activeSource) {
+      return;
+    }
+
+    setSelectedCollectionPlaylist(playlist);
+    setSelectedCollectionTracks([]);
+    setCollectionPlaylistError('');
+    setIsLoadingCollectionPlaylist(true);
+
+    try {
+      if (playlist.kind === 'liked_songs' && collections?.liked_tracks?.length) {
+        setSelectedCollectionTracks(collections.liked_tracks);
+      } else {
+        const detail = await musicService.getCollectionPlaylist(activeSource.id, playlist);
+        setSelectedCollectionTracks(detail.tracks);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '读取歌单失败';
+      setCollectionPlaylistError(message);
+      notify.error('歌单读取失败', message);
+    } finally {
+      setIsLoadingCollectionPlaylist(false);
+    }
+  }, [activeSource, collections]);
+
   const openCreateSourceForm = useCallback(() => {
     setShowSourceForm(true);
     setWechatLoginSession(null);
@@ -556,7 +604,7 @@ export default function GlobalMusicPlayer() {
     setIsWechatLoggingIn(true);
 
     try {
-      const session = await musicService.createWechatLoginSession();
+      const session = await musicService.createQQLoginSession('wechat');
       setWechatLoginSession(session);
       notify.info('二维码已生成', '请使用微信扫码并在手机上确认登录。');
     } catch (error) {
@@ -669,6 +717,9 @@ export default function GlobalMusicPlayer() {
       setCollections(null);
       setCollectionsSourceId(null);
       setCollectionsError('');
+      setSelectedCollectionPlaylist(null);
+      setSelectedCollectionTracks([]);
+      setCollectionPlaylistError('');
       return;
     }
 
@@ -676,6 +727,9 @@ export default function GlobalMusicPlayer() {
       setCollections(null);
       setCollectionsSourceId(null);
       setCollectionsError('');
+      setSelectedCollectionPlaylist(null);
+      setSelectedCollectionTracks([]);
+      setCollectionPlaylistError('');
       return;
     }
 
@@ -685,6 +739,9 @@ export default function GlobalMusicPlayer() {
 
     setIsLoadingCollections(true);
     setCollectionsError('');
+    setSelectedCollectionPlaylist(null);
+    setSelectedCollectionTracks([]);
+    setCollectionPlaylistError('');
 
     try {
       const nextCollections = await musicService.getCollections(activeSource.id);
@@ -696,6 +753,9 @@ export default function GlobalMusicPlayer() {
       setCollections(null);
       setCollectionsSourceId(null);
       setCollectionsError(message);
+      setSelectedCollectionPlaylist(null);
+      setSelectedCollectionTracks([]);
+      setCollectionPlaylistError(message);
       notify.error('收藏加载失败', message);
     } finally {
       setIsLoadingCollections(false);
@@ -1019,7 +1079,7 @@ export default function GlobalMusicPlayer() {
     let cancelled = false;
     const timerId = window.setInterval(async () => {
       try {
-        const nextSession = await musicService.getWechatLoginSessionStatus(wechatLoginSession.id);
+        const nextSession = await musicService.getQQLoginSessionStatus(wechatLoginSession.id);
         if (cancelled) {
           return;
         }
@@ -1611,104 +1671,140 @@ export default function GlobalMusicPlayer() {
                                 </div>
                               </div>
 
-                              {collections.created_playlists.length > 0 || collections.collected_playlists.length > 0 ? (
+                              {!selectedCollectionPlaylist ? (
                                 <div className="rounded-[24px] border border-slate-200/80 bg-white px-3 py-3">
                                   <div className="flex items-center justify-between gap-3">
-                                    <div className="text-sm font-medium text-slate-800">我的歌单</div>
-                                    <div className="text-xs text-slate-400">
-                                      共 {collections.created_playlists.length + collections.collected_playlists.length} 个
-                                    </div>
+                                    <div className="text-sm font-medium text-slate-800">全部歌单</div>
+                                    <div className="text-xs text-slate-400">{collectionPlaylists.length} 个</div>
                                   </div>
 
                                   <div className="mt-3 space-y-2">
-                                    {[...collections.created_playlists, ...collections.collected_playlists].slice(0, 6).map((playlist) => (
-                                      <div key={`${playlist.kind}-${playlist.id}`} className="flex items-center gap-3 rounded-2xl bg-slate-50 px-3 py-2.5">
-                                        <div className="h-10 w-10 shrink-0 overflow-hidden rounded-2xl bg-slate-100">
-                                          {playlist.cover_url ? (
-                                            <img src={playlist.cover_url} alt={playlist.title} className="h-full w-full object-cover" />
-                                          ) : (
-                                            <div className="flex h-full w-full items-center justify-center text-slate-400">
-                                              <Disc3 className="h-4 w-4" />
-                                            </div>
-                                          )}
-                                        </div>
-                                        <div className="min-w-0 flex-1">
-                                          <div className="truncate text-sm font-medium text-slate-800">{playlist.title}</div>
-                                          <div className="mt-0.5 text-xs text-slate-500">
-                                            {playlist.kind === 'created' ? '创建歌单' : '收藏歌单'} · {playlist.song_count} 首
-                                          </div>
-                                        </div>
+                                    {collectionPlaylists.length === 0 ? (
+                                      <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-500">
+                                        当前还没有可展示的收藏歌单。
                                       </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : null}
-
-                              <div className="space-y-2">
-                                <div className="flex items-center justify-between gap-3">
-                                  <div>
-                                    <div className="text-sm font-medium text-slate-800">
-                                      {collections.liked_songs_playlist?.title || '我喜欢'}
-                                    </div>
-                                    <div className="mt-0.5 text-xs text-slate-500">直接点击即可播放，右侧可加入当前队列</div>
-                                  </div>
-                                  <div className="text-xs text-slate-400">{collections.liked_tracks.length} 首</div>
-                                </div>
-
-                                {collections.liked_tracks.length === 0 ? (
-                                  <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-500">
-                                    当前账号下还没有读取到可播放的收藏歌曲。
-                                  </div>
-                                ) : (
-                                  <div className="space-y-2">
-                                    {collections.liked_tracks.map((track, index) => (
-                                      <div
-                                        key={`${track.source_id}-${track.provider_track_id}-${index}`}
-                                        className="group flex items-center gap-3 rounded-2xl border border-slate-200/80 bg-white px-3 py-2.5 transition hover:-translate-y-0.5 hover:border-sky-200 hover:shadow-sm"
-                                      >
+                                    ) : (
+                                      collectionPlaylists.map((playlist) => (
                                         <button
+                                          key={`${playlist.kind}-${playlist.id}`}
                                           type="button"
-                                          onClick={() => void handlePlayCollectionTrack(index)}
-                                          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                          onClick={() => void handleOpenCollectionPlaylist(playlist)}
+                                          className="flex w-full items-center gap-3 rounded-2xl bg-slate-50 px-3 py-2.5 text-left transition hover:bg-slate-100"
                                         >
-                                          <div className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-slate-100">
-                                            {track.cover_url ? (
-                                              <img src={track.cover_url} alt={track.title} className="h-full w-full object-cover" />
+                                          <div className="h-10 w-10 shrink-0 overflow-hidden rounded-2xl bg-slate-100">
+                                            {playlist.cover_url ? (
+                                              <img src={playlist.cover_url} alt={playlist.title} className="h-full w-full object-cover" />
                                             ) : (
                                               <div className="flex h-full w-full items-center justify-center text-slate-400">
-                                                <Music4 className="h-4.5 w-4.5" />
+                                                {playlist.kind === 'liked_songs' ? <Heart className="h-4 w-4" /> : <Disc3 className="h-4 w-4" />}
                                               </div>
                                             )}
                                           </div>
-
                                           <div className="min-w-0 flex-1">
-                                            <div className="truncate text-sm font-medium text-slate-800">{track.title}</div>
-                                            <div className="mt-0.5 truncate text-xs text-slate-500">
-                                              {track.artist} · {track.album}
+                                            <div className="truncate text-sm font-medium text-slate-800">{playlist.title}</div>
+                                            <div className="mt-0.5 text-xs text-slate-500">
+                                              {playlist.kind === 'liked_songs'
+                                                ? '我的喜欢'
+                                                : playlist.kind === 'created'
+                                                  ? '我的歌单'
+                                                  : '收藏歌单'} · {playlist.song_count} 首
                                             </div>
                                           </div>
-
-                                          <div className="shrink-0 text-xs text-slate-400">{formatDuration(track.duration)}</div>
                                         </button>
-
-                                        <button
-                                          type="button"
-                                          onClick={() => handleAppendTrack(track)}
-                                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-500 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-600"
-                                          aria-label="加入队列"
-                                        >
-                                          <Plus className="h-4 w-4" />
-                                        </button>
-                                      </div>
-                                    ))}
+                                      ))
+                                    )}
                                   </div>
-                                )}
-                              </div>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div>
+                                      <button
+                                        type="button"
+                                        onClick={handleBackToCollectionOverview}
+                                        className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                                      >
+                                        返回全部歌单
+                                      </button>
+                                      <div className="mt-2 text-sm font-medium text-slate-800">{selectedCollectionPlaylist.title}</div>
+                                      <div className="mt-0.5 text-xs text-slate-500">点击歌曲即可播放，右侧可以加入当前队列</div>
+                                    </div>
+                                    <div className="text-xs text-slate-400">
+                                      {isLoadingCollectionPlaylist ? '读取中' : `${selectedCollectionTracks.length} 首`}
+                                    </div>
+                                  </div>
+
+                                  {isLoadingCollectionPlaylist ? (
+                                    <div className="rounded-3xl border border-slate-200 bg-slate-50/80 px-4 py-8 text-center">
+                                      <LoaderCircle className="mx-auto h-5 w-5 animate-spin text-sky-500" />
+                                      <div className="mt-3 text-sm font-medium text-slate-700">正在读取歌单</div>
+                                    </div>
+                                  ) : collectionPlaylistError ? (
+                                    <div className="rounded-3xl border border-rose-200 bg-rose-50/80 px-4 py-6 text-center">
+                                      <div className="text-sm font-medium text-rose-700">歌单读取失败</div>
+                                      <div className="mt-1 text-xs leading-6 text-rose-600">{collectionPlaylistError}</div>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleOpenCollectionPlaylist(selectedCollectionPlaylist)}
+                                        className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-rose-200 bg-white px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50"
+                                      >
+                                        重新获取
+                                      </button>
+                                    </div>
+                                  ) : selectedCollectionTracks.length === 0 ? (
+                                    <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/80 px-4 py-8 text-center text-sm text-slate-500">
+                                      这个歌单里暂时没有可播放的歌曲。
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-2">
+                                      {selectedCollectionTracks.map((track, index) => (
+                                        <div
+                                          key={`${track.source_id}-${track.provider_track_id}-${index}`}
+                                          className="group flex items-center gap-3 rounded-2xl border border-slate-200/80 bg-white px-3 py-2.5 transition hover:-translate-y-0.5 hover:border-sky-200 hover:shadow-sm"
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => void handlePlayCollectionTrack(index)}
+                                            className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                                          >
+                                            <div className="h-12 w-12 shrink-0 overflow-hidden rounded-2xl bg-slate-100">
+                                              {track.cover_url ? (
+                                                <img src={track.cover_url} alt={track.title} className="h-full w-full object-cover" />
+                                              ) : (
+                                                <div className="flex h-full w-full items-center justify-center text-slate-400">
+                                                  <Music4 className="h-4.5 w-4.5" />
+                                                </div>
+                                              )}
+                                            </div>
+
+                                            <div className="min-w-0 flex-1">
+                                              <div className="truncate text-sm font-medium text-slate-800">{track.title}</div>
+                                              <div className="mt-0.5 truncate text-xs text-slate-500">
+                                                {track.artist} · {track.album}
+                                              </div>
+                                            </div>
+
+                                            <div className="shrink-0 text-xs text-slate-400">{formatDuration(track.duration)}</div>
+                                          </button>
+
+                                          <button
+                                            type="button"
+                                            onClick={() => handleAppendTrack(track)}
+                                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-500 transition hover:border-sky-200 hover:bg-sky-50 hover:text-sky-600"
+                                            aria-label="加入队列"
+                                          >
+                                            <Plus className="h-4 w-4" />
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           ) : null}
                         </div>
                       ) : null}
-
                       {activeView === 'queue' ? (
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">

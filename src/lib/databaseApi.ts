@@ -5,9 +5,12 @@ import type {
   Folder,
   MusicLoginSession,
   MusicCollectionsPayload,
+  MusicCollectionPlaylistDetailPayload,
   MusicPlayerState,
+  MusicPhoneLoginResult,
   MusicSearchPayload,
   MusicSource,
+  MusicSourceLoginMode,
   MusicSourceConfig,
   MusicTrack,
   PublicDocumentSummary,
@@ -568,6 +571,29 @@ export const musicService = {
     return apiRequest<MusicCollectionsPayload>(`/music/collections${params.size ? `?${params.toString()}` : ''}`);
   },
 
+  async getCollectionPlaylist(
+    sourceId: string,
+    playlist: {
+      id: string;
+      title: string;
+      kind: 'liked_songs' | 'created' | 'collected';
+      cover_url?: string | null;
+    },
+  ): Promise<MusicCollectionPlaylistDetailPayload> {
+    const params = new URLSearchParams({
+      sourceId,
+      playlistId: playlist.id,
+      playlistTitle: playlist.title,
+      playlistKind: playlist.kind,
+    });
+
+    if (playlist.cover_url) {
+      params.set('playlistCoverUrl', playlist.cover_url);
+    }
+
+    return apiRequest<MusicCollectionPlaylistDetailPayload>(`/music/collections/playlist?${params.toString()}`);
+  },
+
   async getPlayerState(): Promise<MusicPlayerState> {
     return apiRequest<MusicPlayerState>('/music/player-state');
   },
@@ -576,11 +602,19 @@ export const musicService = {
     return apiRequest<MusicPlayerState>('/music/player-state', toJsonRequest(payload, { method: 'PUT' }));
   },
 
-  async createWechatLoginSession(): Promise<MusicLoginSession> {
-    return apiRequest<MusicLoginSession>('/music/qq-login/sessions', toJsonRequest({}, { method: 'POST' }));
+  async createQQLoginSession(loginMode: Extract<MusicSourceLoginMode, 'wechat' | 'qq'> = 'wechat'): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>('/music/qq-login/sessions', toJsonRequest({ login_mode: loginMode }, { method: 'POST' }));
   },
 
-  async getWechatLoginSessionStatus(sessionId: string): Promise<MusicLoginSession> {
+  async getQQLoginSessionStatus(sessionId: string): Promise<MusicLoginSession> {
     return apiRequest<MusicLoginSession>(`/music/qq-login/sessions/${encodeURIComponent(sessionId)}/status`);
+  },
+
+  async loginNeteaseByPhone(payload: {
+    phone: string;
+    password: string;
+    country_code?: string;
+  }): Promise<MusicPhoneLoginResult> {
+    return apiRequest<MusicPhoneLoginResult>('/music/netease/login/phone', toJsonRequest(payload, { method: 'POST' }));
   },
 };

@@ -180,15 +180,23 @@ export interface TeamRecyclePayload {
   files: FileRecord[];
 }
 
+export type MusicSourceType = 'qq_music' | 'netease_music';
+
+export type MusicSourceLoginMode = 'wechat' | 'qq' | 'phone';
+
 export interface MusicSourceConfig {
   cookie?: string | null;
   quality?: 'm4a' | '128' | '320';
+  login_mode?: MusicSourceLoginMode | null;
+  phone?: string | null;
+  country_code?: string | null;
+  account_name?: string | null;
 }
 
 export interface MusicSource {
   id: string;
   user_id: string;
-  type: 'qq_music';
+  type: MusicSourceType;
   name: string;
   config: MusicSourceConfig;
   is_enabled: boolean;
@@ -259,16 +267,37 @@ export interface MusicCollectionsPayload {
   collected_playlists: MusicCollectionPlaylistSummary[];
 }
 
+export interface MusicCollectionPlaylistDetailPayload {
+  source: MusicSource;
+  playlist: MusicCollectionPlaylistSummary;
+  tracks: MusicTrack[];
+}
+
 export interface MusicLoginSession {
   id: string;
   provider: 'qq_music';
-  login_mode: 'wechat';
+  login_mode: 'wechat' | 'qq';
   status: 'pending' | 'scanned' | 'authorized' | 'expired' | 'failed';
   qr_image_data_url: string | null;
   cookie: string | null;
   message: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface MusicPhoneLoginResult {
+  provider: 'netease_music';
+  cookie: string;
+  phone: string;
+  country_code: string;
+  account_name: string | null;
+}
+
+export interface MusicCaptchaSendResult {
+  provider: 'netease_music';
+  phone: string;
+  country_code: string;
+  message: string | null;
 }
 
 export interface Comment {
