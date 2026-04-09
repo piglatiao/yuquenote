@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -315,8 +315,8 @@ async function launchQQMusicQqPopupContext(userId) {
     throw new Error('未检测到可用浏览器，请先安装 Chrome/Edge，或配置 QQ_MUSIC_BROWSER_PATH。');
   }
 
-  const userDataDir = path.join(QQ_MUSIC_LOGIN_PROFILE_ROOT, `qq-music-qq-${userId}`);
-  await mkdir(userDataDir, { recursive: true });
+  await mkdir(QQ_MUSIC_LOGIN_PROFILE_ROOT, { recursive: true });
+  const userDataDir = await mkdtemp(path.join(QQ_MUSIC_LOGIN_PROFILE_ROOT, `qq-music-qq-${userId}-`));
 
   const debugPort = await getAvailableTcpPort();
   const browserProcess = spawn(executablePath, [
@@ -362,9 +362,11 @@ async function launchQQMusicQqPopupContext(userId) {
       isPersistentContext: true,
       browserProcessPid: browserProcess.pid ?? null,
       launchedExternally: true,
+      userDataDir,
     };
   } catch (error) {
     await terminateQQMusicBrowserProcess(browserProcess.pid ?? null);
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => null);
     throw error;
   }
 }
@@ -1109,10 +1111,12 @@ async function closeQQMusicLoginSessionResources(session) {
   const context = session.context ?? null;
   const browser = session.browser ?? null;
   const browserProcessPid = session.browserProcessPid ?? null;
+  const userDataDir = session.userDataDir ?? null;
   session.browser = null;
   session.context = null;
   session.page = null;
   session.browserProcessPid = null;
+  session.userDataDir = null;
 
   if (context) {
     try {
@@ -1132,6 +1136,10 @@ async function closeQQMusicLoginSessionResources(session) {
 
   if (browserProcessPid) {
     await terminateQQMusicBrowserProcess(browserProcessPid);
+  }
+
+  if (userDataDir) {
+    await rm(userDataDir, { recursive: true, force: true }).catch(() => null);
   }
 }
 

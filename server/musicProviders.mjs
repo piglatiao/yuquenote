@@ -1530,7 +1530,14 @@ export async function searchNeteaseMusicTracks({
     return [];
   }
 
-  return list.map(mapNeteaseTrack).filter(Boolean);
+  const detailTracks = await requestNeteaseSongDetails(
+    list
+      .map((item) => normalizeString(item?.id))
+      .filter(Boolean),
+    cookie,
+  ).catch(() => []);
+
+  return mergeNeteaseTracks(detailTracks, list);
 }
 
 export async function getNeteaseMusicLyric({
