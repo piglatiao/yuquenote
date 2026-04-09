@@ -40,6 +40,7 @@ interface SourceDraft {
   name: string;
   cookie: string;
   quality: 'm4a' | '128' | '320';
+  login_mode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'> | null;
   is_enabled: boolean;
   is_default: boolean;
 }
@@ -97,6 +98,7 @@ function createSourceDraft(source?: MusicSource | null): SourceDraft {
       name: '',
       cookie: '',
       quality: '128',
+      login_mode: null,
       is_enabled: true,
       is_default: false,
     };
@@ -107,9 +109,47 @@ function createSourceDraft(source?: MusicSource | null): SourceDraft {
     name: source.name,
     cookie: source.config.cookie ?? '',
     quality: source.config.quality ?? '128',
+    login_mode:
+      source.config.login_mode === 'qq' || source.config.login_mode === 'wechat'
+        ? source.config.login_mode
+        : null,
     is_enabled: source.is_enabled,
     is_default: source.is_default,
   };
+}
+
+function getQQLoginModeLabel(loginMode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>) {
+  return loginMode === 'qq' ? 'QQ 登录' : '微信扫码登录';
+}
+
+function getMusicSourceLoginModeLabel(loginMode: MusicSource['config']['login_mode']) {
+  if (loginMode === 'qq') {
+    return 'QQ 登录';
+  }
+
+  if (loginMode === 'wechat') {
+    return '微信登录';
+  }
+
+  if (loginMode === 'phone') {
+    return '手机号登录';
+  }
+
+  return '未设置登录方式';
+}
+
+function getQQLoginSessionMessage(session: MusicLoginSession | null) {
+  if (!session) {
+    return '';
+  }
+
+  if (session.message?.trim()) {
+    return session.message;
+  }
+
+  return session.login_mode === 'qq'
+    ? '请在弹出的 QQ 登录窗口中完成扫码或确认登录。'
+    : '请使用微信扫码，并在手机上确认登录。';
 }
 
 export default function GlobalMusicPlayer() {
@@ -144,8 +184,9 @@ export default function GlobalMusicPlayer() {
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>(createSourceDraft());
   const [isSavingSource, setIsSavingSource] = useState(false);
   const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
-  const [wechatLoginSession, setWechatLoginSession] = useState<MusicLoginSession | null>(null);
-  const [isWechatLoggingIn, setIsWechatLoggingIn] = useState(false);
+  const [qqLoginSession, setQqLoginSession] = useState<MusicLoginSession | null>(null);
+  const [isCreatingLoginSession, setIsCreatingLoginSession] = useState(false);
+  const [pendingLoginMode, setPendingLoginMode] = useState<Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'> | null>(null);
   const [showCookieField, setShowCookieField] = useState(false);
   const [statusText, setStatusText] = useState('安静地放一首歌。');
 
@@ -589,43 +630,55 @@ export default function GlobalMusicPlayer() {
 
   const openCreateSourceForm = useCallback(() => {
     setShowSourceForm(true);
-    setWechatLoginSession(null);
+    setQqLoginSession(null);
     setShowCookieField(false);
     setSourceDraft({
       name: sources.length > 0 ? `QQ音乐 ${sources.length + 1}` : 'QQ音乐',
       cookie: '',
       quality: '128',
+      login_mode: null,
       is_enabled: true,
       is_default: false,
     });
   }, [sources.length]);
 
-  const handleOpenWechatLogin = useCallback(async () => {
-    setIsWechatLoggingIn(true);
+  const handleOpenQQLogin = useCallback(async (loginMode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>) => {
+    setIsCreatingLoginSession(true);
+    setPendingLoginMode(loginMode);
 
     try {
-      const session = await musicService.createQQLoginSession('wechat');
-      setWechatLoginSession(session);
-      notify.info('二维码已生成', '请使用微信扫码并在手机上确认登录。');
+      const session = await musicService.createQQLoginSession(loginMode);
+      setQqLoginSession(session);
+      setSourceDraft((prev) => ({
+        ...prev,
+        login_mode: loginMode,
+      }));
+      notify.info(
+        loginMode === 'qq' ? 'QQ 登录已打开' : '二维码已生成',
+        loginMode === 'qq'
+          ? '已尝试在本机浏览器打开独立 QQ 登录窗口，也可直接扫描下方二维码。'
+          : '请使用微信扫码并在手机上确认登录。',
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : '微信登录初始化失败。';
+      const message = error instanceof Error ? error.message : '音乐登录初始化失败。';
       notify.error('无法发起登录', message);
     } finally {
-      setIsWechatLoggingIn(false);
+      setIsCreatingLoginSession(false);
+      setPendingLoginMode(null);
     }
   }, []);
 
   const openEditSourceForm = useCallback((source: MusicSource) => {
     setActiveView('sources');
     setShowSourceForm(true);
-    setWechatLoginSession(null);
+    setQqLoginSession(null);
     setShowCookieField(false);
     setSourceDraft(createSourceDraft(source));
   }, []);
 
   const closeSourceForm = useCallback(() => {
     setShowSourceForm(false);
-    setWechatLoginSession(null);
+    setQqLoginSession(null);
     setShowCookieField(false);
     setSourceDraft(createSourceDraft());
   }, []);
@@ -646,6 +699,7 @@ export default function GlobalMusicPlayer() {
           config: {
             cookie: sourceDraft.cookie.trim() || null,
             quality: sourceDraft.quality,
+            login_mode: sourceDraft.login_mode,
           },
           is_enabled: sourceDraft.is_enabled,
           is_default: sourceDraft.is_default,
@@ -657,6 +711,7 @@ export default function GlobalMusicPlayer() {
           config: {
             cookie: sourceDraft.cookie.trim() || null,
             quality: sourceDraft.quality,
+            login_mode: sourceDraft.login_mode,
           },
           is_enabled: sourceDraft.is_enabled,
           is_default: sourceDraft.is_default,
@@ -1064,14 +1119,14 @@ export default function GlobalMusicPlayer() {
   }, [activeSource, activeView, collections, collectionsSourceId, loadCollections]);
 
   useEffect(() => {
-    if (!showSourceForm || !wechatLoginSession?.id) {
+    if (!showSourceForm || !qqLoginSession?.id) {
       return;
     }
 
     if (
-      wechatLoginSession.status === 'authorized'
-      || wechatLoginSession.status === 'expired'
-      || wechatLoginSession.status === 'failed'
+      qqLoginSession.status === 'authorized'
+      || qqLoginSession.status === 'expired'
+      || qqLoginSession.status === 'failed'
     ) {
       return;
     }
@@ -1079,19 +1134,23 @@ export default function GlobalMusicPlayer() {
     let cancelled = false;
     const timerId = window.setInterval(async () => {
       try {
-        const nextSession = await musicService.getQQLoginSessionStatus(wechatLoginSession.id);
+        const nextSession = await musicService.getQQLoginSessionStatus(qqLoginSession.id);
         if (cancelled) {
           return;
         }
 
-        setWechatLoginSession(nextSession);
+        setQqLoginSession(nextSession);
         if (nextSession.status === 'authorized' && nextSession.cookie) {
           setSourceDraft((prev) => ({
             ...prev,
             cookie: nextSession.cookie || '',
+            login_mode: nextSession.login_mode,
           }));
           setShowCookieField(false);
-          notify.success('微信登录成功', '授权已自动写入当前音乐源。');
+          notify.success(
+            nextSession.login_mode === 'qq' ? 'QQ 登录成功' : '微信登录成功',
+            '授权已自动写入当前音乐源。',
+          );
         }
       } catch (error) {
         if (cancelled) {
@@ -1099,7 +1158,7 @@ export default function GlobalMusicPlayer() {
         }
 
         const message = error instanceof Error ? error.message : '登录状态获取失败。';
-        setWechatLoginSession((prev) => (
+        setQqLoginSession((prev) => (
           prev
             ? {
                 ...prev,
@@ -1115,7 +1174,7 @@ export default function GlobalMusicPlayer() {
       cancelled = true;
       window.clearInterval(timerId);
     };
-  }, [showSourceForm, wechatLoginSession]);
+  }, [showSourceForm, qqLoginSession]);
 
   useEffect(() => {
     if (!showCompactVolumeSlider) {
@@ -1592,7 +1651,7 @@ export default function GlobalMusicPlayer() {
                               </div>
                               <div className="mt-3 text-sm font-medium text-slate-700">先登录 QQ 音乐再查看收藏</div>
                               <div className="mt-1 text-xs leading-6 text-slate-500">
-                                在音乐源里完成微信扫码登录后，这里会显示你的我喜欢和收藏歌单。
+                                在音乐源里完成微信或 QQ 登录后，这里会显示你的我喜欢和收藏歌单。
                               </div>
                               <button
                                 type="button"
@@ -1932,7 +1991,9 @@ export default function GlobalMusicPlayer() {
                                       ) : null}
                                     </div>
                                     <div className="mt-1 text-xs text-slate-500">
-                                      音质 {source.config.quality ?? '128'} {source.config.cookie ? '· 已登录' : '· 未登录'}
+                                      {source.config.cookie
+                                        ? `${getMusicSourceLoginModeLabel(source.config.login_mode)} · 音质 ${source.config.quality ?? '128'}`
+                                        : `未登录 · 音质 ${source.config.quality ?? '128'}`}
                                     </div>
                                   </button>
 
@@ -1994,7 +2055,7 @@ export default function GlobalMusicPlayer() {
                     {sourceDraft.id ? '编辑音乐源' : '新增音乐源'}
                   </div>
                   <div className="mt-1 text-xs leading-6 text-slate-500">
-                    支持微信扫码登录，授权成功后会自动写入当前音乐源。
+                    支持微信扫码和 QQ 登录，授权成功后会自动写入当前音乐源。
                   </div>
                 </div>
 
@@ -2030,18 +2091,30 @@ export default function GlobalMusicPlayer() {
                       <label className="block text-xs font-medium text-slate-600">登录状态</label>
                       <button
                         type="button"
-                        onClick={() => void handleOpenWechatLogin()}
-                        disabled={isWechatLoggingIn}
+                        onClick={() => void handleOpenQQLogin('wechat')}
+                        disabled={isCreatingLoginSession}
                         className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {isWechatLoggingIn ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                        {isCreatingLoginSession && pendingLoginMode === 'wechat' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
                         微信扫码登录
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenQQLogin('qq')}
+                        disabled={isCreatingLoginSession}
+                        className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isCreatingLoginSession && pendingLoginMode === 'qq' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                        QQ 登录
                       </button>
                     </div>
 
                     {hasSourceCookie && !showCookieField ? (
                       <div className="flex items-center justify-between rounded-2xl border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-sm text-emerald-700">
-                        <span className="font-medium">已登录</span>
+                        <span className="font-medium">
+                          已登录
+                          {sourceDraft.login_mode ? ` · ${getQQLoginModeLabel(sourceDraft.login_mode)}` : ''}
+                        </span>
                         <button
                           type="button"
                           onClick={() => setShowCookieField(true)}
@@ -2103,21 +2176,21 @@ export default function GlobalMusicPlayer() {
                   </div>
                 </div>
 
-                {wechatLoginSession ? (
+                {qqLoginSession ? (
                   <div className="rounded-[22px] border border-slate-200 bg-slate-50/70 p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-slate-800">微信登录</div>
+                        <div className="text-sm font-medium text-slate-800">{getQQLoginModeLabel(qqLoginSession.login_mode)}</div>
                         <div className="mt-1 text-xs leading-6 text-slate-500">
-                          {wechatLoginSession.message || '请使用微信扫码，并在手机上确认登录。'}
+                          {getQQLoginSessionMessage(qqLoginSession)}
                         </div>
                       </div>
 
                       <button
                         type="button"
-                        onClick={() => setWechatLoginSession(null)}
+                        onClick={() => setQqLoginSession(null)}
                         className="flex h-8 w-8 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                        aria-label="关闭微信登录"
+                        aria-label="关闭登录窗口"
                       >
                         <X className="h-4 w-4" />
                       </button>
@@ -2125,10 +2198,10 @@ export default function GlobalMusicPlayer() {
 
                     <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
                       <div className="flex h-40 w-40 shrink-0 items-center justify-center overflow-hidden rounded-[24px] border border-slate-200 bg-white">
-                        {wechatLoginSession.qr_image_data_url ? (
+                        {qqLoginSession.qr_image_data_url ? (
                           <img
-                            src={wechatLoginSession.qr_image_data_url}
-                            alt="微信登录二维码"
+                            src={qqLoginSession.qr_image_data_url}
+                            alt={`${getQQLoginModeLabel(qqLoginSession.login_mode)}二维码`}
                             className="h-full w-full object-contain"
                           />
                         ) : (
@@ -2140,13 +2213,13 @@ export default function GlobalMusicPlayer() {
                         <div className="rounded-2xl bg-white px-3 py-2">
                           当前状态：
                           <span className="ml-1 font-medium text-slate-900">
-                            {wechatLoginSession.status === 'pending'
+                            {qqLoginSession.status === 'pending'
                               ? '等待扫码'
-                              : wechatLoginSession.status === 'scanned'
+                              : qqLoginSession.status === 'scanned'
                                 ? '等待确认'
-                                : wechatLoginSession.status === 'authorized'
+                                : qqLoginSession.status === 'authorized'
                                   ? '已完成授权'
-                                  : wechatLoginSession.status === 'expired'
+                                  : qqLoginSession.status === 'expired'
                                     ? '二维码已过期'
                                     : '登录失败'}
                           </span>
@@ -2154,15 +2227,15 @@ export default function GlobalMusicPlayer() {
                         <div className="leading-6 text-slate-500">
                           登录完成后，当前音乐源的 Cookie 会自动填入，不需要手动复制。
                         </div>
-                        {(wechatLoginSession.status === 'expired' || wechatLoginSession.status === 'failed') ? (
+                        {(qqLoginSession.status === 'expired' || qqLoginSession.status === 'failed') ? (
                           <button
                             type="button"
-                            onClick={() => void handleOpenWechatLogin()}
-                            disabled={isWechatLoggingIn}
+                            onClick={() => void handleOpenQQLogin(qqLoginSession.login_mode)}
+                            disabled={isCreatingLoginSession}
                             className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
                           >
-                            {isWechatLoggingIn ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                            重新获取二维码
+                            {isCreatingLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            {qqLoginSession.login_mode === 'qq' ? '重新打开 QQ 登录' : '重新获取二维码'}
                           </button>
                         ) : null}
                       </div>

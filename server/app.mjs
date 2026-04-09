@@ -1,8 +1,10 @@
 import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import {
   DATA_DIR,
@@ -78,6 +80,8 @@ import {
 } from './musicProviders.mjs';
 import { json, readJsonBody, readRequestBuffer, sendEmpty, text } from './utils.mjs';
 
+const execFileAsync = promisify(execFile);
+
 const API_PORT = Number(process.env.PORT || process.env.YUQUE_API_PORT || 3001);
 const SERVER_HOST = process.env.HOST || process.env.YUQUE_HOST || '0.0.0.0';
 const DIST_DIR = path.resolve(process.env.YUQUE_STATIC_DIR || path.join(ROOT_DIR, 'dist'));
@@ -97,6 +101,10 @@ const QQ_MUSIC_LOGIN_CONFIG = {
     height: 980,
   },
   launchTimeoutMs: 30000,
+};
+const QQ_MUSIC_QQ_LOGIN_POPUP_SIZE = {
+  width: 540,
+  height: 760,
 };
 const QQ_MUSIC_QQ_LOGIN_PAGE_URL = 'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=716027609&daid=383&style=33&login_text=%E7%99%BB%E5%BD%95&hide_title_bar=1&hide_border=1&target=self&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&pt_3rd_aid=100497308&pt_feedback_link=https%3A%2F%2Fsupport.qq.com%2Fproducts%2F77942%3FcustomInfo%3D.appid100497308&theme=2&verify_theme=';
 const QQ_MUSIC_LOGIN_DEBUG_DIR = path.join(DATA_DIR, 'debug');
@@ -215,6 +223,8 @@ async function launchQQMusicLoginContext(options = {}) {
   const {
     headless = true,
     persistentProfileKey = null,
+    viewport = QQ_MUSIC_LOGIN_CONFIG.viewport,
+    launchArgs = [],
   } = options;
   const executablePath = resolveQQMusicBrowserExecutablePath();
 
@@ -225,7 +235,7 @@ async function launchQQMusicLoginContext(options = {}) {
     const context = await chromium.launchPersistentContext(userDataDir, {
       headless,
       executablePath,
-      viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
+      viewport,
       locale: 'zh-CN',
       userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
       timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
@@ -233,6 +243,7 @@ async function launchQQMusicLoginContext(options = {}) {
       args: [
         '--disable-blink-features=AutomationControlled',
         '--disable-features=IsolateOrigins,site-per-process',
+        ...launchArgs,
       ],
     });
     const page = context.pages()[0] ?? await context.newPage();
@@ -247,7 +258,7 @@ async function launchQQMusicLoginContext(options = {}) {
 
   const browser = await launchQQMusicLoginBrowser();
   const context = await browser.newContext({
-    viewport: QQ_MUSIC_LOGIN_CONFIG.viewport,
+    viewport,
     locale: 'zh-CN',
     userAgent: QQ_MUSIC_LOGIN_CONFIG.userAgent,
   });
@@ -259,6 +270,99 @@ async function launchQQMusicLoginContext(options = {}) {
     page,
     isPersistentContext: false,
   };
+}
+
+async function bringLatestDesktopBrowserWindowToFront(options = {}) {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const {
+    processNames = ['chrome', 'msedge'],
+    minStartTimeMs = Date.now() - 60_000,
+    titlePatterns = [],
+    retries = 12,
+    retryDelayMs = 500,
+    keepTopMost = false,
+  } = options;
+  const normalizedProcessNames = [...new Set(processNames.map((name) => String(name || '').trim().toLowerCase()).filter(Boolean))];
+  if (normalizedProcessNames.length === 0) {
+    return;
+  }
+
+  const thresholdIso = new Date(minStartTimeMs).toISOString();
+  const processListLiteral = normalizedProcessNames.map((name) => `'${name.replace(/'/g, "''")}'`).join(', ');
+  const titlePatternLiteral = titlePatterns
+    .map((pattern) => String(pattern || '').trim())
+    .filter(Boolean)
+    .map((pattern) => `'${pattern.replace(/'/g, "''")}'`)
+    .join(', ');
+  const keepTopMostLiteral = keepTopMost ? '$true' : '$false';
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class CodexWindowBridge {
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+}
+"@
+$processNames = @(${processListLiteral})
+$titlePatterns = @(${titlePatternLiteral})
+$threshold = [DateTime]::Parse("${thresholdIso}")
+$keepTopMost = ${keepTopMostLiteral}
+$flags = 0x0001 -bor 0x0002 -bor 0x0040
+$topMost = [IntPtr]::new(-1)
+$notTopMost = [IntPtr]::new(-2)
+for ($attempt = 0; $attempt -lt ${retries}; $attempt++) {
+  $target = Get-Process | Where-Object {
+    $_.MainWindowHandle -ne 0 -and
+    $processNames -contains $_.ProcessName.ToLowerInvariant() -and
+    $_.StartTime -ge $threshold
+  } | Sort-Object StartTime -Descending | Select-Object -First 1
+
+  if (-not $target) {
+    Start-Sleep -Milliseconds ${retryDelayMs}
+    continue
+  }
+
+  if ($titlePatterns.Count -gt 0) {
+    $target = Get-Process | Where-Object {
+      $_.MainWindowHandle -ne 0 -and
+      $processNames -contains $_.ProcessName.ToLowerInvariant() -and
+      $_.StartTime -ge $threshold -and
+      (
+        $titlePatterns | Where-Object {
+          ([string]$PSItem.MainWindowTitle).ToLowerInvariant().Contains(([string]$_).ToLowerInvariant())
+        }
+      ).Count -gt 0
+    } | Sort-Object StartTime -Descending | Select-Object -First 1
+  }
+
+  if ($target) {
+    $handle = [IntPtr]$target.MainWindowHandle
+    [void][CodexWindowBridge]::ShowWindowAsync($handle, 9)
+    [void][CodexWindowBridge]::SetWindowPos($handle, $topMost, 0, 0, 0, 0, $flags)
+    [void][CodexWindowBridge]::SetForegroundWindow($handle)
+    if (-not $keepTopMost) {
+      Start-Sleep -Milliseconds 1200
+      [void][CodexWindowBridge]::SetWindowPos($handle, $notTopMost, 0, 0, 0, 0, $flags)
+    }
+    break
+  }
+
+  Start-Sleep -Milliseconds ${retryDelayMs}
+}
+`;
+
+  try {
+    await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true,
+    });
+  } catch {
+    // Ignore focus failures. QQ login remains usable without OS-level focus.
+  }
 }
 
 function getQQMusicWechatFrame(page) {
@@ -957,10 +1061,13 @@ async function createQQMusicWechatLoginSession(userId) {
 
 async function createQQMusicQqLoginSession(userId) {
   cleanupQQMusicLoginSessions();
+  const popupLaunchStartedAt = Date.now();
 
   const { browser, context, page, isPersistentContext } = await launchQQMusicLoginContext({
     headless: false,
     persistentProfileKey: `qq-music-qq-${userId}`,
+    viewport: QQ_MUSIC_QQ_LOGIN_POPUP_SIZE,
+    launchArgs: [`--window-size=${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.width},${QQ_MUSIC_QQ_LOGIN_POPUP_SIZE.height}`],
   });
 
   try {
@@ -969,6 +1076,13 @@ async function createQQMusicQqLoginSession(userId) {
       timeout: QQ_MUSIC_LOGIN_CONFIG.launchTimeoutMs,
     });
     await page.waitForTimeout(1200);
+    await bringLatestDesktopBrowserWindowToFront({
+      minStartTimeMs: popupLaunchStartedAt,
+      titlePatterns: ['qq', '登录', 'ptlogin', 'graph.qq.com'],
+      retries: 20,
+      retryDelayMs: 400,
+      keepTopMost: true,
+    });
     const qrImageDataUrl = await captureQQMusicQqQrImageData(page);
     if (!qrImageDataUrl) {
       throw new Error('未能捕获 QQ 扫码登录二维码。');
