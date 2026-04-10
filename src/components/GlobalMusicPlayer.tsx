@@ -253,7 +253,6 @@ export default function GlobalMusicPlayer() {
   const [deleteSourceId, setDeleteSourceId] = useState<string | null>(null);
   const [qqLoginSession, setQqLoginSession] = useState<MusicLoginSession | null>(null);
   const [isCreatingLoginSession, setIsCreatingLoginSession] = useState(false);
-  const [pendingLoginMode, setPendingLoginMode] = useState<Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'> | null>(null);
   const [neteaseLoginSession, setNeteaseLoginSession] = useState<MusicLoginSession | null>(null);
   const [isCreatingNeteaseLoginSession, setIsCreatingNeteaseLoginSession] = useState(false);
   const [showCookieField, setShowCookieField] = useState(false);
@@ -715,29 +714,25 @@ export default function GlobalMusicPlayer() {
     });
   }, [sources]);
 
-  const handleOpenQQLogin = useCallback(async (loginMode: Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>) => {
+  const handleOpenQQLogin = useCallback(async () => {
     setIsCreatingLoginSession(true);
-    setPendingLoginMode(loginMode);
 
     try {
-      const session = await musicService.createQQLoginSession(loginMode);
+      const session = await musicService.createQQLoginSession();
       setQqLoginSession(session);
       setSourceDraft((prev) => ({
         ...prev,
-        login_mode: loginMode,
+        login_mode: session.login_mode,
       }));
       notify.info(
-        loginMode === 'qq' ? 'QQ 登录已打开' : '二维码已生成',
-        loginMode === 'qq'
-          ? '已尝试在本机浏览器打开独立 QQ 登录窗口，也可直接扫描下方二维码。'
-          : '请使用微信扫码并在手机上确认登录。',
+        '二维码已生成',
+        '请使用微信扫码并在手机上确认登录。',
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : '音乐登录初始化失败。';
       notify.error('无法发起登录', message);
     } finally {
       setIsCreatingLoginSession(false);
-      setPendingLoginMode(null);
     }
   }, []);
 
@@ -771,7 +766,7 @@ export default function GlobalMusicPlayer() {
       quality: nextType === 'qq_music' ? prev.quality : '128',
       login_mode:
         nextType === 'qq_music'
-          ? (prev.login_mode === 'qq' || prev.login_mode === 'wechat' ? prev.login_mode : null)
+          ? (prev.login_mode === 'wechat' ? prev.login_mode : null)
           : null,
       account_name: nextType === 'netease_music' ? prev.account_name : '',
     }));
@@ -1288,7 +1283,7 @@ export default function GlobalMusicPlayer() {
           }));
           setShowCookieField(false);
           notify.success(
-            nextSession.login_mode === 'qq' ? 'QQ 登录成功' : '微信登录成功',
+            '微信登录成功',
             '授权已自动写入当前音乐源。',
           );
         }
@@ -2252,7 +2247,7 @@ export default function GlobalMusicPlayer() {
                   <div className="mt-1 text-xs leading-6 text-slate-500">
                     {sourceDraft.type === 'netease_music'
                       ? '支持网易账号二维码登录，授权成功后会自动写入当前音乐源。'
-                      : '支持微信扫码和 QQ 登录，授权成功后会自动写入当前音乐源。'}
+                      : '支持微信扫码登录，授权成功后会自动写入当前音乐源。'}
                   </div>
                 </div>
 
@@ -2306,21 +2301,12 @@ export default function GlobalMusicPlayer() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
-                            onClick={() => void handleOpenQQLogin('wechat')}
+                            onClick={() => void handleOpenQQLogin()}
                             disabled={isCreatingLoginSession}
                             className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            {isCreatingLoginSession && pendingLoginMode === 'wechat' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
+                            {isCreatingLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
                             微信扫码登录
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void handleOpenQQLogin('qq')}
-                            disabled={isCreatingLoginSession}
-                            className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {isCreatingLoginSession && pendingLoginMode === 'qq' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                            QQ 登录
                           </button>
                         </div>
                       </div>
@@ -2349,7 +2335,7 @@ export default function GlobalMusicPlayer() {
                                 cookie: event.target.value,
                               }))
                             }
-                            placeholder="登录成功后会自动回填，也支持手动补充。"
+                            placeholder="登录成功后会自动回填，也支持手动补充QQ登录请直接粘贴cookie。"
                             rows={3}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-700 outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
                           />
@@ -2522,12 +2508,12 @@ export default function GlobalMusicPlayer() {
                         {(qqLoginSession.status === 'expired' || qqLoginSession.status === 'failed') ? (
                           <button
                             type="button"
-                            onClick={() => void handleOpenQQLogin(qqLoginSession.login_mode as Extract<MusicLoginSession['login_mode'], 'wechat' | 'qq'>)}
+                            onClick={() => void handleOpenQQLogin()}
                             disabled={isCreatingLoginSession}
                             className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-xs font-medium text-white transition hover:bg-slate-800 disabled:opacity-60"
                           >
                             {isCreatingLoginSession ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : null}
-                            {qqLoginSession.login_mode === 'qq' ? '重新打开 QQ 登录' : '重新获取二维码'}
+                            重新获取二维码
                           </button>
                         ) : null}
                       </div>

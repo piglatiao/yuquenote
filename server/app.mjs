@@ -2944,10 +2944,12 @@ async function handleApi(req, res, url) {
 
     try {
       const body = await readJsonBody(req);
-      const loginMode = body?.login_mode === 'qq' ? 'qq' : 'wechat';
-      const session = loginMode === 'qq'
-        ? await createQQMusicQqLoginSession(currentUser.id)
-        : await createQQMusicWechatLoginSession(currentUser.id);
+      if (body?.login_mode === 'qq') {
+        json(res, 400, { error: 'QQ 扫码登录已暂时关闭，请改用微信扫码登录。' });
+        return;
+      }
+
+      const session = await createQQMusicWechatLoginSession(currentUser.id);
       json(res, 201, serializeQQMusicLoginSession(session));
     } catch (error) {
       json(res, 502, { error: error instanceof Error ? error.message : '音乐登录初始化失败。' });

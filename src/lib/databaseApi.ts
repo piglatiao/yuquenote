@@ -603,8 +603,8 @@ export const musicService = {
     return apiRequest<MusicPlayerState>('/music/player-state', toJsonRequest(payload, { method: 'PUT' }));
   },
 
-  async createQQLoginSession(loginMode: Extract<MusicSourceLoginMode, 'wechat' | 'qq'> = 'wechat'): Promise<MusicLoginSession> {
-    return apiRequest<MusicLoginSession>('/music/qq-login/sessions', toJsonRequest({ login_mode: loginMode }, { method: 'POST' }));
+  async createQQLoginSession(): Promise<MusicLoginSession> {
+    return apiRequest<MusicLoginSession>('/music/qq-login/sessions', toJsonRequest({ login_mode: 'wechat' }, { method: 'POST' }));
   },
 
   async getQQLoginSessionStatus(sessionId: string): Promise<MusicLoginSession> {
