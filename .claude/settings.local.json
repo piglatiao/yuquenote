@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "禁止删除。其他的自己修改，禁止提交代码",
+      "Bash(pnpm build:*)"
+    ]
+  }
+}
