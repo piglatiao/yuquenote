@@ -1459,7 +1459,7 @@ export default function WorkspaceSidebar({
           })}
         </nav>
 
-        <div className="mt-3 flex-1 overflow-y-auto px-3 pb-4">
+        <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-3 pb-4">
           <div className="app-section-enter rounded-[24px] bg-[#f2efe8] px-2 py-2">
             <button
               type="button"
@@ -1496,6 +1496,8 @@ export default function WorkspaceSidebar({
             )}
           </div>
         </div>
+
+        <div aria-hidden="true" className="h-[156px] shrink-0" />
 
         {contextMenu && (
           <div
