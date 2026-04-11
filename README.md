@@ -67,6 +67,8 @@ Flowing Light Notes 是一个本地优先的知识库与文件协作系统，前
 - `deploy-linux.sh`
 - `start-linux.sh`
 
+部署脚本默认会使用国内 Playwright 镜像 `https://npmmirror.com/mirrors/playwright` 下载 Chromium 浏览器内核；如果你自己提前设置了 `PLAYWRIGHT_DOWNLOAD_HOST`，脚本会优先使用你的配置。
+
 详细说明请查看 [RELEASE.md](RELEASE.md)。
 
 ## 🔐 账号说明

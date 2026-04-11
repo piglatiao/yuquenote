@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PLAYWRIGHT_DOWNLOAD_HOST="https://npmmirror.com/mirrors/playwright"
 
 cd "${ROOT_DIR}"
 
@@ -63,6 +64,17 @@ install_dependencies() {
   fi
 }
 
+ensure_playwright_mirror() {
+  if [[ -n "${PLAYWRIGHT_DOWNLOAD_HOST:-}" ]]; then
+    log "检测到自定义 Playwright 下载源：${PLAYWRIGHT_DOWNLOAD_HOST}"
+  else
+    export PLAYWRIGHT_DOWNLOAD_HOST="${DEFAULT_PLAYWRIGHT_DOWNLOAD_HOST}"
+    log "未检测到自定义 Playwright 下载源，默认使用国内镜像：${PLAYWRIGHT_DOWNLOAD_HOST}"
+  fi
+
+  log "如需自定义下载源，请预先设置 PLAYWRIGHT_DOWNLOAD_HOST 环境变量"
+}
+
 install_chromium() {
   log "开始安装 Playwright Chromium 浏览器内核"
   pnpm exec playwright install chromium || fail "浏览器内核安装失败，请检查网络或代理配置。"
@@ -84,6 +96,7 @@ log "该脚本会依次完成：环境检测、依赖安装、浏览器内核安
 check_node
 check_pnpm
 install_dependencies
+ensure_playwright_mirror
 install_chromium
 verify_chromium
 build_release

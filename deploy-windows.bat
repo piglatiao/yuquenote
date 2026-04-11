@@ -39,6 +39,14 @@ if exist pnpm-lock.yaml (
 )
 if errorlevel 1 goto :install_failed
 
+if defined PLAYWRIGHT_DOWNLOAD_HOST (
+  echo [部署] 检测到自定义 Playwright 下载源：!PLAYWRIGHT_DOWNLOAD_HOST!
+) else (
+  set "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"
+  echo [部署] 未检测到自定义 Playwright 下载源，默认使用国内镜像：!PLAYWRIGHT_DOWNLOAD_HOST!
+)
+echo [部署] 如需自定义下载源，请预先设置 PLAYWRIGHT_DOWNLOAD_HOST 环境变量。
+
 echo [部署] 开始安装 Playwright Chromium 浏览器内核...
 call pnpm exec playwright install chromium
 if errorlevel 1 goto :chromium_install_failed

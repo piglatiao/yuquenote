@@ -36,11 +36,15 @@ chmod +x ./deploy-linux.sh ./start-linux.sh
 2. 检测 `pnpm`
 3. 检测 `node:sqlite` 能力
 4. 安装依赖
-5. 安装 Playwright Chromium 浏览器内核
+5. 默认使用国内镜像安装 Playwright Chromium 浏览器内核
 6. 验证 Chromium 能否正常启动
 7. 构建前端发布产物
 
 如果环境不足，脚本会直接提示缺失项并停止执行。
+
+默认情况下，部署脚本会把 Playwright 浏览器下载源设置为 `https://npmmirror.com/mirrors/playwright`。
+
+如果你已经提前设置了 `PLAYWRIGHT_DOWNLOAD_HOST`，脚本会直接使用你自己的下载源，不会覆盖。
 
 ## 启动脚本会做什么
 

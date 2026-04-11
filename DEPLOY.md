@@ -26,11 +26,15 @@
 
 1. 环境检测
 2. 依赖安装
-3. Chromium 浏览器内核安装
+3. 默认使用国内镜像安装 Chromium 浏览器内核
 4. Chromium 启动验证
 5. 前端构建
 
 如果环境不足，会直接提示缺失项并停止执行。
+
+默认情况下，部署脚本会把 Playwright 浏览器下载源设置为 `https://npmmirror.com/mirrors/playwright`。
+
+如果你已经提前设置了 `PLAYWRIGHT_DOWNLOAD_HOST`，脚本会直接使用你自己的下载源，不会覆盖。
 
 ## 启动脚本职责
 
