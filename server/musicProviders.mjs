@@ -1,5 +1,3 @@
-import path from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
 
@@ -13,7 +11,6 @@ const NETEASE_WEAPI_MODULUS =
   'b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312' +
   'ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe' +
   '4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7';
-const QQ_MUSIC_DEBUG_DIR = path.join(process.cwd(), 'data', 'debug');
 const QQ_MUSIC_BROWSER_EXECUTABLE_CANDIDATES = [
   process.env.QQ_MUSIC_BROWSER_PATH,
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
@@ -216,18 +213,6 @@ function parseQQInitialDataFromHtml(html) {
     return JSON.parse(jsonText.replace(/\bundefined\b/g, 'null'));
   } catch {
     return null;
-  }
-}
-
-async function writeQQMusicDebugSnapshot(name, payload) {
-  try {
-    await mkdir(QQ_MUSIC_DEBUG_DIR, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const serialized = JSON.stringify(payload, null, 2);
-    await writeFile(path.join(QQ_MUSIC_DEBUG_DIR, `${name}-${timestamp}.json`), serialized, 'utf8');
-    await writeFile(path.join(QQ_MUSIC_DEBUG_DIR, `${name}-latest.json`), serialized, 'utf8');
-  } catch {
-    // Ignore debug snapshot failures.
   }
 }
 
@@ -1966,12 +1951,6 @@ export async function getQQMusicCollections({
   const normalizedCookie = String(cookie || '').trim();
   const uin = extractQQUinFromCookie(normalizedCookie);
   if (!uin) {
-    await writeQQMusicDebugSnapshot('qq-music-collections', {
-      ok: false,
-      step: 'extract_uin',
-      message: 'No valid QQ uin was found in the cookie.',
-      cookie_keys: [...parseCookieMap(normalizedCookie).keys()],
-    });
     throw new Error('当前 QQ 音乐音源未包含有效登录信息，请重新登录后再试。');
   }
 
@@ -1984,13 +1963,6 @@ export async function getQQMusicCollections({
     ]);
 
     if (!likedPagePayload && !profilePayload && !createdPayload && !collectedPayload) {
-      await writeQQMusicDebugSnapshot('qq-music-collections', {
-        ok: false,
-        step: 'fetch_payloads',
-        message: 'No payloads were returned by any collection endpoint.',
-        uin,
-        cookie_keys: [...parseCookieMap(normalizedCookie).keys()],
-      });
       throw new Error('未读取到 QQ 音乐收藏数据，请确认当前音源已完成登录后再试。');
     }
 
@@ -2075,25 +2047,6 @@ export async function getQQMusicCollections({
       }),
     );
 
-    await writeQQMusicDebugSnapshot('qq-music-collections', {
-      ok: true,
-      uin,
-      cookie_keys: [...parseCookieMap(normalizedCookie).keys()],
-      liked_songs_playlist: likedSongsPlaylist,
-      liked_track_count: likedTracks.length,
-      created_playlist_count: createdPlaylists.length,
-      collected_playlist_count: collectedPlaylists.length,
-      liked_page_playlist_count: likedPagePlaylists.length,
-      profile,
-      liked_tracks_preview: likedTracks.slice(0, 10),
-      likedPagePayload,
-      profilePayload,
-      createdPayload,
-      collectedPayload,
-      browserFallback,
-      playlistBrowserFallback,
-    });
-
     return {
       uin,
       nickname: profile.nickname,
@@ -2104,13 +2057,6 @@ export async function getQQMusicCollections({
       collected_playlists: collectedWithCounts,
     };
   } catch (error) {
-    await writeQQMusicDebugSnapshot('qq-music-collections', {
-      ok: false,
-      step: 'exception',
-      uin,
-      cookie_keys: [...parseCookieMap(normalizedCookie).keys()],
-      message: error instanceof Error ? error.message : 'Unknown error',
-    });
     throw error;
   }
 }

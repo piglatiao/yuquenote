@@ -124,7 +124,6 @@ const QQ_MUSIC_QQ_LOGIN_POPUP_SIZE = {
   height: 760,
 };
 const QQ_MUSIC_QQ_LOGIN_PAGE_URL = 'https://xui.ptlogin2.qq.com/cgi-bin/xlogin?appid=716027609&daid=383&style=33&login_text=%E7%99%BB%E5%BD%95&hide_title_bar=1&hide_border=1&target=self&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&pt_3rd_aid=100497308&pt_feedback_link=https%3A%2F%2Fsupport.qq.com%2Fproducts%2F77942%3FcustomInfo%3D.appid100497308&theme=2&verify_theme=';
-const QQ_MUSIC_LOGIN_DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const QQ_MUSIC_LOGIN_PROFILE_ROOT = path.join(DATA_DIR, 'music-login-profiles');
 const qqMusicLoginSessions = new Map();
 const neteaseMusicLoginSessions = new Map();
@@ -1039,70 +1038,6 @@ async function hydrateQQMusicLoginState(session) {
   return getQQMusicAuthorizedCookieString(session.context, { allowPartial: true });
 }
 
-async function writeQQMusicLoginDebugSnapshot(name, payload) {
-  try {
-    await mkdir(QQ_MUSIC_LOGIN_DEBUG_DIR, { recursive: true });
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const serialized = JSON.stringify(payload, null, 2);
-    await writeFile(path.join(QQ_MUSIC_LOGIN_DEBUG_DIR, `${name}-${timestamp}.json`), serialized, 'utf8');
-    await writeFile(path.join(QQ_MUSIC_LOGIN_DEBUG_DIR, `${name}-latest.json`), serialized, 'utf8');
-  } catch {
-    // Ignore debug snapshot failures.
-  }
-}
-
-async function collectQQMusicLoginDebugState(session, extra = {}) {
-  if (!session?.context || !session?.page || session.page.isClosed()) {
-    return {
-      login_mode: session?.login_mode ?? null,
-      page_closed: true,
-      ...extra,
-    };
-  }
-
-  const cookies = await getQQMusicContextCookies(session.context).catch(() => []);
-  const pageText = await session.page.locator('body').innerText().catch(() => '');
-  const frameSummaries = await Promise.all(
-    session.page.frames().map(async (frame) => {
-      const buttons = [];
-      try {
-        const buttonLocators = frame.locator('button, input[type="submit"], a[role="button"], a, input[type="button"]');
-        const count = Math.min(await buttonLocators.count(), 12);
-        for (let index = 0; index < count; index += 1) {
-          const locator = buttonLocators.nth(index);
-          const text = await locator.innerText().catch(async () => locator.getAttribute('value').catch(() => ''));
-          const visible = await locator.isVisible().catch(() => false);
-          if (text || visible) {
-            buttons.push({
-              text: String(text || '').trim().slice(0, 120),
-              visible,
-            });
-          }
-        }
-      } catch {
-        // Ignore button introspection failures.
-      }
-
-      return {
-        url: frame.url(),
-        text: (await frame.locator('body').innerText().catch(() => '')).slice(0, 500),
-        buttons,
-      };
-    }),
-  ).catch(() => []);
-
-  return {
-    login_mode: session.login_mode,
-    status: session.status,
-    page_url: session.page.url(),
-    cookie_names: cookies.map((cookie) => cookie.name),
-    cookie_count: cookies.length,
-    page_text: String(pageText || '').slice(0, 1000),
-    frames: frameSummaries,
-    ...extra,
-  };
-}
-
 async function closeQQMusicLoginSessionResources(session) {
   if (!session) {
     return;
@@ -1483,10 +1418,6 @@ async function refreshQQMusicQqLoginSession(session) {
     session.status = 'scanned';
     session.message = '已扫码，请在 QQ 中确认登录。';
     session.updated_at = now();
-    await writeQQMusicLoginDebugSnapshot('qq-music-qq-login', await collectQQMusicLoginDebugState(session, {
-      phase: 'scanned_waiting_confirm',
-      scanned_at_value: session.scanned_at_value,
-    }));
     return session;
   }
 
@@ -1540,11 +1471,6 @@ async function refreshQQMusicQqLoginSession(session) {
       return session;
     }
   }
-
-  await writeQQMusicLoginDebugSnapshot('qq-music-qq-login', await collectQQMusicLoginDebugState(session, {
-    phase: qqFrame ? 'pending_with_frame' : 'pending_without_frame',
-    scanned_at_value: session.scanned_at_value ?? null,
-  }));
 
   session.status = 'pending';
   session.message = '等待 QQ 扫码。';
